@@ -57,13 +57,14 @@ export const Badge: React.FC<BadgeProps> = ({
   if (role) {
     if (role === 'director') {
       return (
-        <span className={`inline-flex items-center font-bold rounded-md bg-[#23285E]/10 text-[#23285E] border border-[#23285E]/20 ${sizeClasses} ${className}`}>
-          Main Director
+        <span className={`inline-flex items-center gap-1 font-bold rounded-md bg-[#23285E]/10 text-[#23285E] border border-[#23285E]/20 ${sizeClasses} ${className}`}>
+          <span className="w-1.5 h-1.5 rounded-full bg-[#3591C8]"></span>
+          Super Admin (Director)
         </span>
       );
     }
     return (
-      <span className={`inline-flex items-center font-medium rounded-md bg-slate-100 text-slate-700 border border-slate-200 ${sizeClasses} ${className}`}>
+      <span className={`inline-flex items-center gap-1 font-medium rounded-md bg-slate-100 text-slate-700 border border-slate-200 ${sizeClasses} ${className}`}>
         District Admin
       </span>
     );

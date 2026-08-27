@@ -80,10 +80,14 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onBackToLanding }) => {
         setErrorMsg('Invalid email or password. Please check your credentials and try again.');
       } else if (err.code === 'auth/email-already-in-use') {
         setErrorMsg('This email is already registered. Please sign in instead.');
-      } else if (err.code === 'auth/popup-closed-by-user') {
-        setErrorMsg('Google Sign-in was cancelled.');
+      } else if (err.code === 'auth/weak-password') {
+        setErrorMsg('Password is too weak. Please use at least 6 characters.');
+      } else if (err.code === 'auth/operation-not-allowed') {
+        setErrorMsg('Email/Password provider is not enabled. Please enable "Email/Password" in Firebase Console > Authentication > Sign-in method.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setErrorMsg(`Unauthorized Domain: Please add "${window.location.hostname}" to Firebase Console > Authentication > Settings > Authorized domains.`);
       } else {
-        setErrorMsg(err.message || 'Unable to complete sign in. Please check your network and credentials.');
+        setErrorMsg(err.message || 'Unable to complete request. Please check your network and credentials.');
       }
     } finally {
       setLoading(false);
@@ -97,7 +101,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onBackToLanding }) => {
       const dObj = availableDistricts.find(d => d.id === selectedDistrictId) || availableDistricts[0];
       await signInWithGoogle(dObj.id, dObj.name);
     } catch (err: any) {
-      if (err.code !== 'auth/popup-closed-by-user') {
+      console.error('Google Sign-in error:', err);
+      if (err.code === 'auth/popup-closed-by-user') {
+        setErrorMsg('Google Sign-in popup was closed before completing.');
+      } else if (err.code === 'auth/unauthorized-domain') {
+        setErrorMsg(`Unauthorized Domain: Please add "${window.location.hostname}" to Firebase Console > Authentication > Settings > Authorized domains.`);
+      } else if (err.code === 'auth/operation-not-allowed') {
+        setErrorMsg('Google Sign-in is not enabled yet in your Firebase Project. Please enable the "Google" provider under Firebase Console > Authentication > Sign-in method.');
+      } else if (err.code === 'auth/popup-blocked') {
+        setErrorMsg('The sign-in popup was blocked by your browser. Please allow popups for this site and try again.');
+      } else if (err.code === 'auth/cancelled-popup-request') {
+        setErrorMsg('Another sign-in request is already in progress.');
+      } else {
         setErrorMsg(err.message || 'Google Sign-in failed. Please try again.');
       }
     } finally {

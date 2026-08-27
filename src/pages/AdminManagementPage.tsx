@@ -13,11 +13,14 @@ import {
   Trash2,
   AlertTriangle,
   User,
+  UserPlus,
   Mail,
   Phone,
   Calendar,
   Layers,
-  Sparkles
+  Sparkles,
+  Shield,
+  Crown
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
@@ -37,6 +40,7 @@ export const AdminManagementPage: React.FC = () => {
     settings,
     updateUserStatus,
     deleteUser,
+    createAdminUser,
     addDistrict,
     updateDistrict,
     deleteDistrict,
@@ -63,6 +67,16 @@ export const AdminManagementPage: React.FC = () => {
   const [isApprovalModalOpen, setIsApprovalModalOpen] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
 
+  // Create Administrator / Super Admin Modal state
+  const [isCreatingUser, setIsCreatingUser] = useState(false);
+  const [newFullName, setNewFullName] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [newRole, setNewRole] = useState<'admin' | 'director'>('director');
+  const [newDistrictId, setNewDistrictId] = useState('nyabihu');
+  const [newPosition, setNewPosition] = useState('Super Administrator');
+  const [creatingUserLoading, setCreatingUserLoading] = useState(false);
+
   // Settings form
   const [centerName, setCenterName] = useState(settings.centerName);
   const [tagline, setTagline] = useState(settings.tagline);
@@ -86,6 +100,51 @@ export const AdminManagementPage: React.FC = () => {
   // Pending user requests
   const pendingUsers = allUserProfiles.filter(u => u.status === 'pending');
   const activeAdmins = allUserProfiles.filter(u => u.status !== 'pending');
+
+  const handleOpenCreateUser = (role: 'director' | 'admin' = 'director') => {
+    setNewFullName('');
+    setNewEmail('');
+    setNewPhone('');
+    setNewRole(role);
+    setNewDistrictId('nyabihu');
+    setNewPosition(role === 'director' ? 'Super Administrator' : 'District Administrator');
+    setIsCreatingUser(true);
+  };
+
+  const handleCreateUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newFullName.trim() || !newEmail.trim()) {
+      toast.error('Validation Error', 'Full Name and Email Address are required.');
+      return;
+    }
+    setCreatingUserLoading(true);
+    try {
+      const created = await createAdminUser({
+        fullName: newFullName.trim(),
+        email: newEmail.trim(),
+        phone: newPhone.trim(),
+        role: newRole,
+        districtId: newDistrictId || 'nyabihu',
+        position: newPosition.trim() || (newRole === 'director' ? 'Super Administrator' : 'District Administrator'),
+        status: 'approved',
+      });
+      toast.success(
+        newRole === 'director' ? 'Super Admin Created' : 'Administrator Created',
+        `${created.fullName} has been granted ${newRole === 'director' ? 'Super Admin (Director)' : 'District Admin'} privileges for ${created.districtName}.`
+      );
+      setIsCreatingUser(false);
+      setNewFullName('');
+      setNewEmail('');
+      setNewPhone('');
+      setNewRole('director');
+      setNewDistrictId('nyabihu');
+      setNewPosition('');
+    } catch (err: any) {
+      toast.error('Creation Failed', err?.message || 'Could not create administrator account');
+    } finally {
+      setCreatingUserLoading(false);
+    }
+  };
 
   const handleOpenApprove = (u: UserProfile) => {
     setTargetUser(u);
@@ -353,12 +412,27 @@ export const AdminManagementPage: React.FC = () => {
       {/* Tab 2: District Administrators */}
       {activeTab === 'admins' && (
         <div className="bg-white rounded-2xl border border-slate-200 p-6 shadow-xs space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h3 className="text-base font-bold text-[#23285E]">Authorized Administrators</h3>
+              <h3 className="text-base font-bold text-[#23285E] flex items-center gap-2">
+                Authorized Administrators
+                <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-semibold">
+                  {activeAdmins.length}
+                </span>
+              </h3>
               <p className="text-xs text-slate-500">
-                Staff authorized to record visits and generate district-specific attendance reports
+                Staff and Super Administrators authorized to manage Nyabihu YEGO Center and branch attendance
               </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => handleOpenCreateUser('director')}
+                icon={<Crown className="w-4 h-4 text-amber-300" />}
+              >
+                Create Super Admin / Admin
+              </Button>
             </div>
           </div>
 
@@ -378,8 +452,31 @@ export const AdminManagementPage: React.FC = () => {
                 {activeAdmins.map((adm) => (
                   <tr key={adm.id} className="hover:bg-slate-50/60">
                     <td className="py-3 px-4">
-                      <p className="font-bold text-[#23285E]">{adm.fullName}</p>
-                      <p className="text-[11px] text-slate-500">{adm.email}</p>
+                      <div className="flex items-center gap-2">
+                        {adm.role === 'director' ? (
+                          <div className="w-7 h-7 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center flex-shrink-0">
+                            <Crown className="w-3.5 h-3.5" />
+                          </div>
+                        ) : (
+                          <div className="w-7 h-7 rounded-full bg-slate-100 text-slate-700 flex items-center justify-center flex-shrink-0">
+                            <User className="w-3.5 h-3.5" />
+                          </div>
+                        )}
+                        <div>
+                          <p className="font-bold text-[#23285E] flex items-center gap-1.5">
+                            {adm.fullName}
+                            {adm.id === userProfile?.id && (
+                              <span className="text-[10px] bg-blue-50 text-blue-700 font-semibold px-1.5 py-0.2 rounded border border-blue-200">
+                                You
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[11px] text-slate-500">{adm.email}</p>
+                          {adm.position && (
+                            <p className="text-[10px] text-slate-400 font-medium">{adm.position}</p>
+                          )}
+                        </div>
+                      </div>
                     </td>
                     <td className="py-3 px-3">
                       <Badge role={adm.role} size="sm" />
@@ -394,7 +491,7 @@ export const AdminManagementPage: React.FC = () => {
                       {adm.createdAt ? new Date(adm.createdAt).toLocaleDateString('en-GB') : '2026-01-01'}
                     </td>
                     <td className="py-3 px-4 text-right">
-                      {adm.role !== 'director' && (
+                      {adm.id !== userProfile?.id ? (
                         <div className="inline-flex items-center gap-1.5 justify-end">
                           <button
                             onClick={() => handleOpenApprove(adm)}
@@ -428,6 +525,8 @@ export const AdminManagementPage: React.FC = () => {
                             <Trash2 className="w-3.5 h-3.5" />
                           </button>
                         </div>
+                      ) : (
+                        <span className="text-[11px] text-slate-400 italic">Current User</span>
                       )}
                     </td>
                   </tr>
@@ -614,6 +713,191 @@ export const AdminManagementPage: React.FC = () => {
             </div>
           </form>
         </div>
+      )}
+
+      {/* Create Administrator / Super Admin Modal */}
+      {isCreatingUser && (
+        <Modal
+          isOpen={isCreatingUser}
+          onClose={() => {
+            if (!creatingUserLoading) setIsCreatingUser(false);
+          }}
+          title="Create Administrator / Super Admin"
+          subtitle="Provision an authorized administrator account for Nyabihu YEGO Center"
+        >
+          <form onSubmit={handleCreateUser} className="space-y-4 text-xs">
+            {/* Role Selection */}
+            <div>
+              <label className="block text-xs font-bold text-[#23285E] mb-1.5">
+                Administrative Privilege Level *
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewRole('director');
+                    if (!newPosition || newPosition === 'District Administrator') {
+                      setNewPosition('Super Administrator');
+                    }
+                  }}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                    newRole === 'director'
+                      ? 'border-[#23285E] bg-[#23285E]/5 ring-1 ring-[#23285E]'
+                      : 'border-slate-200 bg-white hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <Crown className="w-4 h-4 text-amber-500" />
+                    <span className="font-bold text-[#23285E]">Super Admin (Director)</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-tight">
+                    Full authority: create other super admins, manage all districts, global analytics, and settings.
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNewRole('admin');
+                    if (!newPosition || newPosition === 'Super Administrator') {
+                      setNewPosition('District Administrator');
+                    }
+                  }}
+                  className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                    newRole === 'admin'
+                      ? 'border-[#3591C8] bg-[#3591C8]/5 ring-1 ring-[#3591C8]'
+                      : 'border-slate-200 bg-white hover:border-slate-300'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <ShieldCheck className="w-4 h-4 text-[#3591C8]" />
+                    <span className="font-bold text-[#23285E]">District Administrator</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 leading-tight">
+                    Record visits, verify attendance, and generate local district reports.
+                  </p>
+                </button>
+              </div>
+            </div>
+
+            {/* Full Name */}
+            <div>
+              <label className="block text-xs font-bold text-[#23285E] mb-1">
+                Full Name *
+              </label>
+              <div className="relative">
+                <User className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Marie Claire Uwase"
+                  value={newFullName}
+                  onChange={(e) => setNewFullName(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:border-[#23285E] outline-none"
+                />
+              </div>
+            </div>
+
+            {/* Email Address */}
+            <div>
+              <label className="block text-xs font-bold text-[#23285E] mb-1">
+                Official Email Address *
+              </label>
+              <div className="relative">
+                <Mail className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                <input
+                  type="email"
+                  required
+                  placeholder="e.g. marie.uwase@nyabihu.gov.rw or gmail.com"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:border-[#23285E] outline-none"
+                />
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1">
+                The user can log in immediately using Google Sign-In or Email with this address.
+              </p>
+            </div>
+
+            {/* District Assignment & Phone */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-bold text-[#23285E] mb-1">
+                  Assigned District Location *
+                </label>
+                <select
+                  value={newDistrictId}
+                  onChange={(e) => setNewDistrictId(e.target.value)}
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:border-[#23285E] outline-none"
+                >
+                  {districts.map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name} {d.id === 'nyabihu' ? '(Default Center)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[#23285E] mb-1">
+                  Phone Number
+                </label>
+                <div className="relative">
+                  <Phone className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="tel"
+                    placeholder="e.g. +250 788 123 456"
+                    value={newPhone}
+                    onChange={(e) => setNewPhone(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:border-[#23285E] outline-none"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Position / Title */}
+            <div>
+              <label className="block text-xs font-bold text-[#23285E] mb-1">
+                Official Title / Position
+              </label>
+              <input
+                type="text"
+                placeholder={newRole === 'director' ? 'e.g. Super Administrator / Director' : 'e.g. Youth Attendance Officer'}
+                value={newPosition}
+                onChange={(e) => setNewPosition(e.target.value)}
+                className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:border-[#23285E] outline-none"
+              />
+            </div>
+
+            <div className="p-2.5 rounded-xl bg-emerald-50/80 border border-emerald-200 text-emerald-800 text-[11px] flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 flex-shrink-0 text-emerald-600" />
+              <span>
+                Account will be created as <strong>Approved</strong> with instant access granted.
+              </span>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={() => setIsCreatingUser(false)}
+                disabled={creatingUserLoading}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                type="submit"
+                loading={creatingUserLoading}
+                icon={newRole === 'director' ? <Crown className="w-4 h-4 text-amber-300" /> : <UserPlus className="w-4 h-4" />}
+              >
+                {newRole === 'director' ? 'Create Super Admin' : 'Create Administrator'}
+              </Button>
+            </div>
+          </form>
+        </Modal>
       )}
 
       {/* Approve / Edit Administrator Modal */}

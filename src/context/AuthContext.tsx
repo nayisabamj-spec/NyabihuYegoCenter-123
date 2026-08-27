@@ -13,6 +13,11 @@ import {
   getDoc,
   setDoc,
   updateDoc,
+  collection,
+  query,
+  where,
+  getDocs,
+  deleteDoc,
 } from 'firebase/firestore';
 import { auth, db, googleProvider, DEFAULT_DIRECTOR_EMAIL } from '../firebase/config';
 import { UserProfile, UserStatus } from '../types';
@@ -43,27 +48,73 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const AUTH_CACHE_KEY = 'nyabihu_auth_user_cache';
+
+const getInitialCachedProfile = (): UserProfile | null => {
+  try {
+    const cached = localStorage.getItem(AUTH_CACHE_KEY);
+    return cached ? JSON.parse(cached) : null;
+  } catch {
+    return null;
+  }
+};
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
-  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
+  const [userProfile, setUserProfileState] = useState<UserProfile | null>(getInitialCachedProfile);
+  const [loading, setLoading] = useState<boolean>(!getInitialCachedProfile());
+
+  const setUserProfile = (profile: UserProfile | null) => {
+    setUserProfileState(profile);
+    try {
+      if (profile) {
+        localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(profile));
+      } else {
+        localStorage.removeItem(AUTH_CACHE_KEY);
+      }
+    } catch {}
+  };
+
+  // Helper with timeout to prevent hung requests
+  const withTimeout = <T,>(promise: Promise<T>, timeoutMs = 2800): Promise<T> => {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) => setTimeout(() => reject(new Error('Network request timed out')), timeoutMs)),
+    ]);
+  };
 
   // Fetch or create profile on Firestore
   const fetchUserProfile = async (user: FirebaseUser, defaultDistrictId?: string, defaultDistrictName?: string): Promise<UserProfile | null> => {
-    try {
-      const isDirectorEmail = user.email?.toLowerCase().trim() === DEFAULT_DIRECTOR_EMAIL.toLowerCase().trim();
-      const userRef = doc(db, 'users', user.uid);
-      const userSnap = await getDoc(userRef);
+    const isDirectorEmail = user.email?.toLowerCase().trim() === DEFAULT_DIRECTOR_EMAIL.toLowerCase().trim();
+    
+    // Quick optimistic profile if nothing is set
+    const optimisticFallback: UserProfile = {
+      id: user.uid,
+      fullName: user.displayName || user.email?.split('@')[0] || (isDirectorEmail ? 'Nyirabakunda Marie' : 'Administrator'),
+      email: user.email || '',
+      role: isDirectorEmail ? 'director' : 'admin',
+      districtId: isDirectorEmail ? 'nyabihu' : (defaultDistrictId || 'nyabihu'),
+      districtName: isDirectorEmail ? 'Nyabihu District' : (defaultDistrictName || 'Nyabihu District'),
+      status: isDirectorEmail ? 'approved' : 'pending',
+      position: isDirectorEmail ? 'Executive Center Director' : 'Youth Attendance Officer',
+      profilePhoto: user.photoURL || '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      lastLoginAt: new Date().toISOString(),
+    };
 
-      if (userSnap.exists()) {
+    try {
+      const userRef = doc(db, 'users', user.uid);
+      const userSnap = await withTimeout(getDoc(userRef), 2500).catch(() => null);
+
+      if (userSnap && userSnap.exists()) {
         const data = userSnap.data() as UserProfile;
         
-        // Enforce director status for director email
         let updatedProfile = { ...data };
         if (isDirectorEmail && (data.role !== 'director' || data.status !== 'approved')) {
           updatedProfile.role = 'director';
           updatedProfile.status = 'approved';
-          await updateDoc(userRef, {
+          updateDoc(userRef, {
             role: 'director',
             status: 'approved',
             updatedAt: new Date().toISOString(),
@@ -72,14 +123,50 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         setUserProfile(updatedProfile);
 
-        // Update last login
-        await updateDoc(userRef, {
+        // Update last login in background
+        updateDoc(userRef, {
           lastLoginAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         }).catch(() => {});
         return updatedProfile;
       } else {
-        // Auto-configure director or initialize new staff pending authorization
+        // Check if pre-provisioned profile exists
+        if (user.email) {
+          try {
+            const userEmailClean = user.email.toLowerCase().trim();
+            const emailQuery = query(collection(db, 'users'), where('email', '==', userEmailClean));
+            const emailSnap = await withTimeout(getDocs(emailQuery), 2000).catch(() => null);
+
+            if (emailSnap && !emailSnap.empty) {
+              const matchedDoc = emailSnap.docs[0];
+              const preData = matchedDoc.data() as UserProfile;
+
+              const mergedProfile: UserProfile = {
+                ...preData,
+                id: user.uid,
+                fullName: preData.fullName || user.displayName || user.email?.split('@')[0] || 'Administrator',
+                profilePhoto: user.photoURL || preData.profilePhoto || '',
+                status: isDirectorEmail ? 'approved' : (preData.status || 'approved'),
+                role: isDirectorEmail ? 'director' : (preData.role || 'admin'),
+                districtId: preData.districtId || 'nyabihu',
+                districtName: preData.districtName || 'Nyabihu District',
+                lastLoginAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
+
+              setDoc(userRef, mergedProfile).catch(() => {});
+              if (matchedDoc.id !== user.uid) {
+                deleteDoc(doc(db, 'users', matchedDoc.id)).catch(() => {});
+              }
+
+              setUserProfile(mergedProfile);
+              return mergedProfile;
+            }
+          } catch (e) {
+            console.warn('Pre-provisioned user lookup non-blocking error:', e);
+          }
+        }
+
         const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || 'nyabihu')) || DEFAULT_DISTRICTS[0];
         const assignedDistrictId = isDirectorEmail ? 'nyabihu' : (defaultDistrictId || districtObj.id);
         const assignedDistrictName = isDirectorEmail ? 'Nyabihu District' : (defaultDistrictName || districtObj.name);
@@ -100,10 +187,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           lastLoginAt: new Date().toISOString(),
         };
 
-        await setDoc(userRef, newProfile);
+        setDoc(userRef, newProfile).catch(() => {});
         setUserProfile(newProfile);
 
-        // If newly registered pending user, alert director
         if (!isDirectorEmail) {
           const notifId = `notif-req-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
           setDoc(doc(db, 'notifications', notifId), {
@@ -123,26 +209,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (err) {
       console.warn('Error fetching or creating user profile in Firestore:', err);
-      // Fallback user profile in case of offline/network conditions
-      const isDirectorEmail = user.email?.toLowerCase().trim() === DEFAULT_DIRECTOR_EMAIL.toLowerCase().trim();
-      const fallbackProfile: UserProfile = {
-        id: user.uid,
-        fullName: user.displayName || user.email?.split('@')[0] || (isDirectorEmail ? 'Nyirabakunda Marie' : 'Staff Member'),
-        email: user.email || '',
-        role: isDirectorEmail ? 'director' : 'admin',
-        districtId: 'nyabihu',
-        districtName: 'Nyabihu District',
-        status: isDirectorEmail ? 'approved' : 'pending',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-      setUserProfile(fallbackProfile);
-      return fallbackProfile;
+      setUserProfile(optimisticFallback);
+      return optimisticFallback;
     }
   };
 
   useEffect(() => {
+    // Safety timer to prevent stuck loading screen
+    const safetyTimer = setTimeout(() => {
+      setLoading(false);
+    }, 1500);
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      clearTimeout(safetyTimer);
       setCurrentUser(user);
       if (user) {
         await fetchUserProfile(user);
@@ -152,7 +231,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => {
+      clearTimeout(safetyTimer);
+      unsubscribe();
+    };
   }, []);
 
   const refreshProfile = async () => {

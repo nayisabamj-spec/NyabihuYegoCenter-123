@@ -82,6 +82,15 @@ interface AppContextType {
   updateDistrict: (id: string, updates: Partial<District>) => Promise<void>;
   deleteDistrict: (id: string) => Promise<void>;
   deleteUser: (userId: string) => Promise<void>;
+  createAdminUser: (params: {
+    fullName: string;
+    email: string;
+    phone?: string;
+    role: 'director' | 'admin';
+    districtId?: string;
+    position?: string;
+    status?: UserStatus;
+  }) => Promise<UserProfile>;
   addService: (name: string, description: string, icon?: string) => Promise<void>;
   updateService: (id: string, updates: Partial<ServiceItem>) => Promise<void>;
   deleteService: (id: string) => Promise<void>;
@@ -96,75 +105,75 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { userProfile, isDirector } = useAuth();
 
-  const [districts, setDistricts] = useState<District[]>([]);
-  const [services, setServices] = useState<ServiceItem[]>([]);
-  const [allAttendance, setAllAttendance] = useState<AttendanceRecord[]>([]);
+  const [districts, setDistricts] = useState<District[]>(() => {
+    try {
+      const s = localStorage.getItem('nyabihu_districts_cache');
+      return s ? JSON.parse(s) : DEFAULT_DISTRICTS;
+    } catch {
+      return DEFAULT_DISTRICTS;
+    }
+  });
+
+  const [services, setServices] = useState<ServiceItem[]>(() => {
+    try {
+      const s = localStorage.getItem('nyabihu_services_cache');
+      return s ? JSON.parse(s) : DEFAULT_SERVICES;
+    } catch {
+      return DEFAULT_SERVICES;
+    }
+  });
+
+  const [allAttendance, setAllAttendance] = useState<AttendanceRecord[]>(() => {
+    try {
+      const s = localStorage.getItem('nyabihu_attendance_backup');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+
   const [allUserProfiles, setAllUserProfiles] = useState<UserProfile[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SETTINGS);
-  const [loadingData, setLoadingData] = useState<boolean>(true);
+  const [loadingData, setLoadingData] = useState<boolean>(false);
 
   // Director district filter: 'all' or specific districtId
   const [activeDistrictFilter, setActiveDistrictFilter] = useState<string>('all');
 
-  // Load or sync Districts & Services & Settings
+  // Load or sync Districts & Services in background (Parallel, non-blocking)
   useEffect(() => {
     let isMounted = true;
 
     const initializeBaseData = async () => {
       try {
-        // 1. Districts
         const districtsRef = collection(db, 'districts');
-        const dSnap = await getDocs(districtsRef).catch(() => null);
-
-        let initialDistricts: District[] = [];
-        if (dSnap && !dSnap.empty) {
-          initialDistricts = dSnap.docs.map(doc => doc.data() as District);
-        } else {
-          // Seed defaults
-          initialDistricts = DEFAULT_DISTRICTS.map(d => ({
-            ...d,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }));
-          // Try to write to firestore
-          for (const dist of initialDistricts) {
-            setDoc(doc(db, 'districts', dist.id), dist).catch(() => {});
-          }
-        }
-        if (isMounted) setDistricts(initialDistricts);
-
-        // 2. Services
         const servicesRef = collection(db, 'services');
-        const sSnap = await getDocs(servicesRef).catch(() => null);
 
-        let initialServices: ServiceItem[] = [];
-        if (sSnap && !sSnap.empty) {
-          initialServices = sSnap.docs.map(doc => doc.data() as ServiceItem);
-          initialServices.sort((a, b) => (a.order || 0) - (b.order || 0));
-        } else {
-          // Seed defaults
-          initialServices = DEFAULT_SERVICES.map(s => ({
-            ...s,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-          }));
-          for (const srv of initialServices) {
-            setDoc(doc(db, 'services', srv.id), srv).catch(() => {});
-          }
+        const [districtsRes, servicesRes] = await Promise.allSettled([
+          getDocs(districtsRef),
+          getDocs(servicesRef),
+        ]);
+
+        if (!isMounted) return;
+
+        if (districtsRes.status === 'fulfilled' && !districtsRes.value.empty) {
+          const loadedDistricts = districtsRes.value.docs.map(doc => doc.data() as District);
+          setDistricts(loadedDistricts);
+          try {
+            localStorage.setItem('nyabihu_districts_cache', JSON.stringify(loadedDistricts));
+          } catch {}
         }
-        if (isMounted) setServices(initialServices);
 
-        // 3. Settings
-        const settingsDoc = await doc(db, 'settings', 'general');
-        // fallback
-        if (isMounted) setSettings(DEFAULT_SETTINGS);
+        if (servicesRes.status === 'fulfilled' && !servicesRes.value.empty) {
+          const loadedServices = servicesRes.value.docs.map(doc => doc.data() as ServiceItem);
+          loadedServices.sort((a, b) => (a.order || 0) - (b.order || 0));
+          setServices(loadedServices);
+          try {
+            localStorage.setItem('nyabihu_services_cache', JSON.stringify(loadedServices));
+          } catch {}
+        }
       } catch (err) {
-        console.warn('Fallback initializing base data locally:', err);
-        if (isMounted) {
-          setDistricts(DEFAULT_DISTRICTS.map(d => ({ ...d, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })));
-          setServices(DEFAULT_SERVICES.map(s => ({ ...s, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() })));
-        }
+        console.warn('Background base data sync info:', err);
       }
     };
 
@@ -644,6 +653,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
   };
 
+  const createAdminUser = async (params: {
+    fullName: string;
+    email: string;
+    phone?: string;
+    role: 'director' | 'admin';
+    districtId?: string;
+    position?: string;
+    status?: UserStatus;
+  }): Promise<UserProfile> => {
+    if (!isDirector) {
+      throw new Error('Only an authorized Super Admin (Director) can create new administrators.');
+    }
+
+    const emailClean = params.email.toLowerCase().trim();
+    if (!emailClean) {
+      throw new Error('Email address is required.');
+    }
+
+    // Check if user with this email already exists in local list
+    const existing = allUserProfiles.find(u => u.email.toLowerCase().trim() === emailClean);
+    if (existing) {
+      throw new Error(`An administrator with email "${emailClean}" already exists (${existing.fullName} - ${existing.role}).`);
+    }
+
+    const assignedDistrictId = params.districtId || 'nyabihu';
+    const dObj = districts.find(d => d.id === assignedDistrictId) || districts[0] || { id: 'nyabihu', name: 'Nyabihu District' };
+
+    const userId = `admin_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+    const newProfile: UserProfile = {
+      id: userId,
+      fullName: params.fullName.trim(),
+      email: emailClean,
+      phone: params.phone?.trim() || '',
+      role: params.role,
+      districtId: assignedDistrictId,
+      districtName: dObj.name,
+      status: params.status || 'approved',
+      position: params.position?.trim() || (params.role === 'director' ? 'Super Administrator / Main Director' : 'District Administrator'),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    setAllUserProfiles(prev => [newProfile, ...prev]);
+
+    // Save to Firestore in background/parallel without blocking UI
+    setDoc(doc(db, 'users', userId), newProfile).catch((err) => {
+      console.warn('Firestore setDoc non-blocking warning:', err);
+    });
+
+    logAction(
+      params.role === 'director' ? 'CREATE_SUPER_ADMIN' : 'CREATE_ADMIN',
+      'user',
+      userId,
+      `Created ${params.role === 'director' ? 'Super Admin' : 'Admin'}: ${newProfile.fullName} (${newProfile.email}) for ${newProfile.districtName}`
+    ).catch(() => {});
+
+    // Trigger notification for admins
+    const notifId = `notif-user-created-${Date.now()}`;
+    setDoc(doc(db, 'notifications', notifId), {
+      id: notifId,
+      recipientUserId: 'all_approved_admins',
+      type: 'admin_approved',
+      title: params.role === 'director' ? 'New Super Admin Created' : 'New Administrator Created',
+      message: `${params.fullName} was created as ${params.role === 'director' ? 'Super Admin (Director)' : 'District Administrator'} for ${dObj.name}.`,
+      priority: 'normal',
+      districtId: assignedDistrictId,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+    }).catch(() => {});
+
+    return newProfile;
+  };
+
   // Services management
   const addService = async (name: string, description: string, icon?: string) => {
     const id = `srv-${name.toLowerCase().replace(/[^a-z0-9]/g, '-').replace(/-+/g, '-')}`;
@@ -820,6 +902,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateDistrict,
         deleteDistrict,
         deleteUser,
+        createAdminUser,
         addService,
         updateService,
         deleteService,
