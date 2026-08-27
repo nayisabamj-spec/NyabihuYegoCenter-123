@@ -1,0 +1,131 @@
+import { ServiceItem, District, SystemSettings } from '../types';
+
+export const DEFAULT_SERVICES: Omit<ServiceItem, 'createdAt' | 'updatedAt'>[] = [
+  {
+    id: 'srv-empowerment',
+    name: 'Youth Empowerment & Entrepreneurship Skills',
+    description: 'Business skills training, entrepreneurship development, vocational workshops, and financial literacy.',
+    status: 'active',
+    icon: 'Sparkles',
+    order: 1,
+  },
+  {
+    id: 'srv-ict',
+    name: 'ICT',
+    description: 'Computer literacy training, internet access, digital literacy, coding, and software education.',
+    status: 'active',
+    icon: 'Laptop',
+    order: 2,
+  },
+  {
+    id: 'srv-library',
+    name: 'Library',
+    description: 'Educational books, study space, quiet research, digital library resources, and literacy support.',
+    status: 'active',
+    icon: 'BookOpen',
+    order: 3,
+  },
+  {
+    id: 'srv-vct',
+    name: 'VCT',
+    description: 'Voluntary Counselling and confidential health testing guidance in safe environments.',
+    status: 'active',
+    icon: 'ShieldCheck',
+    order: 4,
+  },
+  {
+    id: 'srv-sports',
+    name: 'Sports & Leisure',
+    description: 'Indoor & outdoor recreational sports, fitness activities, youth tournaments, and wellness.',
+    status: 'active',
+    icon: 'Trophy',
+    order: 5,
+  },
+  {
+    id: 'srv-outreach',
+    name: 'Outreach Communication',
+    description: 'Community sensitization, youth outreach campaigns, mobile info sessions, and local radio programs.',
+    status: 'active',
+    icon: 'Megaphone',
+    order: 6,
+  },
+  {
+    id: 'srv-srh',
+    name: 'SRH',
+    description: 'Sexual & Reproductive Health peer education, advisory sessions, and confidential youth counseling.',
+    status: 'active',
+    icon: 'HeartHandshake',
+    order: 7,
+  },
+  {
+    id: 'srv-jobdesk',
+    name: 'Job Desk',
+    description: 'Employment orientation, resume preparation, job search assistance, internship placements, and coaching.',
+    status: 'active',
+    icon: 'Briefcase',
+    order: 8,
+  },
+  {
+    id: 'srv-volunteering',
+    name: 'Volunteering & Civic Education',
+    description: 'Community development initiatives, civic values, leadership training, and youth volunteer networks.',
+    status: 'active',
+    icon: 'Users',
+    order: 9,
+  },
+];
+
+export const DEFAULT_DISTRICTS: Omit<District, 'createdAt' | 'updatedAt'>[] = [
+  {
+    id: 'nyabihu',
+    name: 'Nyabihu District',
+    code: 'NYA-01',
+    status: 'active',
+    location: 'Western Province, Rwanda (Main Center)',
+    contactPerson: 'Nyirabakunda Marie',
+  },
+  {
+    id: 'rubavu',
+    name: 'Rubavu District',
+    code: 'RUB-02',
+    status: 'active',
+    location: 'Western Province, Rwanda',
+    contactPerson: 'District Coordinator',
+  },
+  {
+    id: 'musanze',
+    name: 'Musanze District',
+    code: 'MUS-03',
+    status: 'active',
+    location: 'Northern Province, Rwanda',
+    contactPerson: 'Youth Branch Officer',
+  },
+  {
+    id: 'ngororero',
+    name: 'Ngororero District',
+    code: 'NGO-04',
+    status: 'active',
+    location: 'Western Province, Rwanda',
+    contactPerson: 'Youth Field Officer',
+  },
+  {
+    id: 'rutsiro',
+    name: 'Rutsiro District',
+    code: 'RUT-05',
+    status: 'active',
+    location: 'Western Province, Rwanda',
+    contactPerson: 'Community Liaison',
+  }
+];
+
+export const DEFAULT_SETTINGS: SystemSettings = {
+  id: 'general',
+  centerName: 'NYABIHU YEGO CENTER',
+  tagline: 'Youth Services Attendance, Management & Reporting Platform',
+  contactEmail: 'nyirabakundamarie@gmail.com',
+  contactPhone: '+250 788 000 000',
+  address: 'Nyabihu District, Western Province, Rwanda',
+  primaryColor: '#23285E',
+  secondaryColor: '#3591C8',
+  updatedAt: new Date().toISOString(),
+};

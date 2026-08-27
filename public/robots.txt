@@ -1,0 +1,19 @@
+# Robots.txt for NYABIHU YEGO CENTER
+User-agent: *
+Allow: /
+Allow: /#services
+Allow: /#about
+Allow: /favicon.png
+Allow: /og-image.png
+Allow: /manifest.json
+
+# Disallow private and administrative areas to protect visitor & system data privacy
+Disallow: /dashboard
+Disallow: /attendance
+Disallow: /reports
+Disallow: /admin
+Disallow: /profile
+Disallow: /notifications
+Disallow: /api/
+
+Sitemap: /sitemap.xml

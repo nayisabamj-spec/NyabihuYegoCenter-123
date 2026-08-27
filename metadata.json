@@ -1,0 +1,6 @@
+{
+  "name": "NYABIHU YEGO CENTER",
+  "description": "Youth Services, Attendance and Reporting Platform for NYABIHU YEGO CENTER.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

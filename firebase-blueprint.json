@@ -1,0 +1,117 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Administrator and Director user profiles",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullName": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["director", "admin"] },
+        "districtId": { "type": "string" },
+        "districtName": { "type": "string" },
+        "status": { "type": "string", "enum": ["pending", "approved", "suspended", "rejected", "deactivated"] },
+        "profilePhoto": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" },
+        "lastLoginAt": { "type": "string" }
+      },
+      "required": ["id", "fullName", "email", "role", "districtId", "status"]
+    },
+    "District": {
+      "title": "District",
+      "description": "Operating district centers",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "status"]
+    },
+    "Service": {
+      "title": "Service",
+      "description": "Youth services offered at Yego Center",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "status": { "type": "string", "enum": ["active", "inactive"] },
+        "icon": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "name", "status"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Daily youth service visit record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "districtId": { "type": "string" },
+        "districtName": { "type": "string" },
+        "adminId": { "type": "string" },
+        "recordedBy": { "type": "string" },
+        "personName": { "type": "string" },
+        "sex": { "type": "string", "enum": ["Male", "Female"] },
+        "serviceId": { "type": "string" },
+        "serviceNameSnapshot": { "type": "string" },
+        "attendanceDate": { "type": "string" },
+        "attendanceTime": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "districtId", "adminId", "personName", "sex", "serviceId", "serviceNameSnapshot", "attendanceDate", "attendanceTime"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Audit trail for critical administrative actions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "action": { "type": "string" },
+        "entityType": { "type": "string" },
+        "entityId": { "type": "string" },
+        "districtId": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "metadata": { "type": "object" }
+      },
+      "required": ["id", "userId", "userName", "action", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile records indexed by auth UID"
+    },
+    "/districts/{districtId}": {
+      "schema": "District",
+      "description": "Participating district centers"
+    },
+    "/services/{serviceId}": {
+      "schema": "Service",
+      "description": "Youth center services catalogue"
+    },
+    "/attendance/{attendanceId}": {
+      "schema": "AttendanceRecord",
+      "description": "Individual attendance check-in records"
+    },
+    "/auditLogs/{logId}": {
+      "schema": "AuditLog",
+      "description": "System and administrative action audit trails"
+    },
+    "/settings/{settingId}": {
+      "schema": "object",
+      "description": "System settings and configuration"
+    }
+  }
+}
