@@ -85,6 +85,14 @@ export const AdminManagementPage: React.FC = () => {
   const [address, setAddress] = useState(settings.address);
   const [settingsSaved, setSettingsSaved] = useState(false);
 
+  React.useEffect(() => {
+    setCenterName(settings.centerName);
+    setTagline(settings.tagline);
+    setContactEmail(settings.contactEmail);
+    setContactPhone(settings.contactPhone);
+    setAddress(settings.address);
+  }, [settings.centerName, settings.tagline, settings.contactEmail, settings.contactPhone, settings.address]);
+
   if (!isDirector) {
     return (
       <div className="bg-white p-8 rounded-2xl border border-red-200 text-center max-w-lg mx-auto">

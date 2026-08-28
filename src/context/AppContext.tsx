@@ -140,51 +140,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Director district filter: 'all' or specific districtId
   const [activeDistrictFilter, setActiveDistrictFilter] = useState<string>('all');
 
-  // Load or sync Districts & Services in background (Parallel, non-blocking)
+  // Load or sync Districts & Services & Settings in real-time
   useEffect(() => {
-    let isMounted = true;
-
-    const initializeBaseData = async () => {
-      try {
-        const districtsRef = collection(db, 'districts');
-        const servicesRef = collection(db, 'services');
-
-        const [districtsRes, servicesRes] = await Promise.allSettled([
-          getDocs(districtsRef),
-          getDocs(servicesRef),
-        ]);
-
-        if (!isMounted) return;
-
-        if (districtsRes.status === 'fulfilled' && !districtsRes.value.empty) {
-          const loadedDistricts = districtsRes.value.docs.map(doc => doc.data() as District);
-          setDistricts(loadedDistricts);
-          try {
-            localStorage.setItem('nyabihu_districts_cache', JSON.stringify(loadedDistricts));
-          } catch {}
-        }
-
-        if (servicesRes.status === 'fulfilled' && !servicesRes.value.empty) {
-          const loadedServices = servicesRes.value.docs.map(doc => doc.data() as ServiceItem);
-          loadedServices.sort((a, b) => (a.order || 0) - (b.order || 0));
-          setServices(loadedServices);
-          try {
-            localStorage.setItem('nyabihu_services_cache', JSON.stringify(loadedServices));
-          } catch {}
-        }
-      } catch (err) {
-        console.warn('Background base data sync info:', err);
+    // 1. Real-time Districts listener
+    const districtsRef = collection(db, 'districts');
+    const unsubDistricts = onSnapshot(districtsRef, (snap) => {
+      if (!snap.empty) {
+        const loadedDistricts = snap.docs.map(doc => doc.data() as District);
+        setDistricts(loadedDistricts);
+        try {
+          localStorage.setItem('nyabihu_districts_cache', JSON.stringify(loadedDistricts));
+        } catch {}
+      } else {
+        // Initialize defaults if empty
+        DEFAULT_DISTRICTS.forEach(d => {
+          const distDoc: District = {
+            ...d,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          setDoc(doc(db, 'districts', d.id), distDoc).catch(() => {});
+        });
       }
-    };
+    }, (err) => {
+      console.warn('Districts listener info:', err);
+    });
 
-    initializeBaseData();
+    // 2. Real-time Services listener
+    const servicesRef = collection(db, 'services');
+    const unsubServices = onSnapshot(servicesRef, (snap) => {
+      if (!snap.empty) {
+        const loadedServices = snap.docs.map(doc => doc.data() as ServiceItem);
+        loadedServices.sort((a, b) => (a.order || 0) - (b.order || 0));
+        setServices(loadedServices);
+        try {
+          localStorage.setItem('nyabihu_services_cache', JSON.stringify(loadedServices));
+        } catch {}
+      } else {
+        DEFAULT_SERVICES.forEach(s => {
+          const srvDoc: ServiceItem = {
+            ...s,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+          setDoc(doc(db, 'services', s.id), srvDoc).catch(() => {});
+        });
+      }
+    }, (err) => {
+      console.warn('Services listener info:', err);
+    });
+
+    // 3. Real-time Settings listener
+    const settingsRef = doc(db, 'settings', 'general');
+    const unsubSettings = onSnapshot(settingsRef, (snap) => {
+      if (snap.exists()) {
+        setSettings(snap.data() as SystemSettings);
+      } else {
+        setDoc(settingsRef, DEFAULT_SETTINGS).catch(() => {});
+      }
+    }, (err) => {
+      console.warn('Settings listener info:', err);
+    });
 
     return () => {
-      isMounted = false;
+      unsubDistricts();
+      unsubServices();
+      unsubSettings();
     };
   }, []);
 
-  // Listen to Attendance in real-time or from Firestore
+  // Listen to Attendance, Users & Audit Logs in real-time from Firestore
   useEffect(() => {
     if (!userProfile || userProfile.status !== 'approved') {
       setAllAttendance([]);
@@ -220,11 +245,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return dtB.localeCompare(dtA);
           });
           setAllAttendance(records);
+          try {
+            localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 1500)));
+          } catch {}
           setLoadingData(false);
         },
         (error) => {
-          console.warn('Firestore attendance snapshot error or offline, fallback to local store:', error);
-          // Check local backup
+          console.warn('Firestore attendance snapshot error, fallback to local store:', error);
           const localSaved = localStorage.getItem('nyabihu_attendance_backup');
           if (localSaved) {
             try {
@@ -239,25 +266,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       );
 
-      // If director: listen to all users
-      if (isDirector) {
-        const usersRef = collection(db, 'users');
-        unsubUsers = onSnapshot(usersRef, (snapshot) => {
-          const users: UserProfile[] = [];
-          snapshot.forEach((doc) => {
-            users.push(doc.data() as UserProfile);
-          });
-          setAllUserProfiles(users);
-        }, () => {});
+      // Listen to all users for approved administrators & directors
+      const usersRef = collection(db, 'users');
+      unsubUsers = onSnapshot(usersRef, (snapshot) => {
+        const users: UserProfile[] = [];
+        snapshot.forEach((doc) => {
+          users.push(doc.data() as UserProfile);
+        });
+        setAllUserProfiles(users);
+      }, (err) => {
+        console.warn('Users listener info:', err);
+      });
 
-        const logsRef = collection(db, 'auditLogs');
-        const logsQuery = query(logsRef, orderBy('timestamp', 'desc'), limit(100));
-        unsubLogs = onSnapshot(logsQuery, (snapshot) => {
-          const logs: AuditLog[] = [];
-          snapshot.forEach(d => logs.push(d.data() as AuditLog));
-          setAuditLogs(logs);
-        }, () => {});
-      }
+      // Audit logs listener
+      const logsRef = collection(db, 'auditLogs');
+      const logsQuery = query(logsRef, orderBy('timestamp', 'desc'), limit(100));
+      unsubLogs = onSnapshot(logsQuery, (snapshot) => {
+        const logs: AuditLog[] = [];
+        snapshot.forEach(d => logs.push(d.data() as AuditLog));
+        setAuditLogs(logs);
+      }, (err) => {
+        console.warn('Audit logs listener info:', err);
+      });
     } catch (e) {
       console.warn('Error setting up firestore listeners:', e);
       setLoadingData(false);
@@ -268,7 +298,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubUsers();
       unsubLogs();
     };
-  }, [userProfile?.id, userProfile?.districtId, isDirector]);
+  }, [userProfile?.id, userProfile?.districtId, isDirector, userProfile?.status]);
 
   // Compute filtered attendance records according to data isolation & active filter
   const attendanceRecords = useMemo(() => {
@@ -697,17 +727,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setAllUserProfiles(prev => [newProfile, ...prev]);
 
-    // Save to Firestore in background/parallel without blocking UI
-    setDoc(doc(db, 'users', userId), newProfile).catch((err) => {
-      console.warn('Firestore setDoc non-blocking warning:', err);
-    });
-
-    logAction(
-      params.role === 'director' ? 'CREATE_SUPER_ADMIN' : 'CREATE_ADMIN',
-      'user',
-      userId,
-      `Created ${params.role === 'director' ? 'Super Admin' : 'Admin'}: ${newProfile.fullName} (${newProfile.email}) for ${newProfile.districtName}`
-    ).catch(() => {});
+    try {
+      await setDoc(doc(db, 'users', userId), newProfile);
+      await logAction(
+        params.role === 'director' ? 'CREATE_SUPER_ADMIN' : 'CREATE_ADMIN',
+        'user',
+        userId,
+        `Created ${params.role === 'director' ? 'Super Admin' : 'Admin'}: ${newProfile.fullName} (${newProfile.email}) for ${newProfile.districtName}`
+      );
+    } catch (err: any) {
+      console.warn('Firestore setDoc user warning:', err);
+    }
 
     // Trigger notification for admins
     const notifId = `notif-user-created-${Date.now()}`;
@@ -773,9 +803,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updated = { ...settings, ...updates, updatedAt: new Date().toISOString() };
     setSettings(updated);
     try {
-      await setDoc(doc(db, 'settings', 'general'), updated);
+      await setDoc(doc(db, 'settings', 'general'), updated, { merge: true });
       await logAction('UPDATE_SETTINGS', 'settings', 'general', 'Updated center settings');
-    } catch {}
+    } catch (e) {
+      console.warn('Error saving settings to Firestore:', e);
+    }
   };
 
   // Seed realistic historical attendance dataset

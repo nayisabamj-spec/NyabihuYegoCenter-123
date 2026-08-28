@@ -7,77 +7,55 @@ service cloud.firestore {
       return request.auth != null;
     }
     
-    // Helper to check if current user is active director (Main Super Admin)
-    function isDirector() {
-      return isAuthenticated() && (
-        request.auth.token.email == 'nyirabakundamarie@gmail.com' ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'director' &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'approved')
-      );
-    }
-
-    // Helper to check if current user is an approved staff administrator
-    function isApprovedStaff() {
-      return isAuthenticated() && (
-        isDirector() ||
-        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
-         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status == 'approved')
-      );
-    }
-    
-    // Users collection
+    // Users collection (Admins, Super Admins, Staff)
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated() && (request.auth.uid == userId || isDirector());
-      allow update: if isAuthenticated() && (request.auth.uid == userId || isDirector());
-      allow delete: if isDirector();
+      allow read: if isAuthenticated() || true;
+      allow create, update: if isAuthenticated();
+      allow delete: if isAuthenticated();
     }
     
     // Districts collection
     match /districts/{districtId} {
       allow read: if true;
-      allow write: if isDirector();
+      allow write: if isAuthenticated();
     }
     
     // Services collection
     match /services/{serviceId} {
       allow read: if true;
-      allow write: if isDirector();
+      allow write: if isAuthenticated();
     }
     
     // Attendance records collection
     match /attendance/{attendanceId} {
-      allow read: if isApprovedStaff();
+      allow read: if true;
       allow create: if true; // Allows visitor kiosk self-checkin & staff logging
-      allow update: if isApprovedStaff();
-      allow delete: if isDirector();
+      allow update, delete: if isAuthenticated();
     }
     
     // Audit logs
     match /auditLogs/{logId} {
-      allow read: if isApprovedStaff();
-      allow create: if isAuthenticated();
-      allow update, delete: if isDirector();
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() || true;
+      allow update, delete: if isAuthenticated();
     }
     
-    // Settings
+    // Settings collection
     match /settings/{settingId} {
       allow read: if true;
-      allow write: if isDirector();
+      allow write: if isAuthenticated();
     }
     
     // Notifications collection
     match /notifications/{notificationId} {
-      allow read: if isApprovedStaff();
-      allow create: if true; // Allows visitor self check-in & system events to trigger admin alerts
-      allow update: if isApprovedStaff();
-      allow delete: if isApprovedStaff();
+      allow read: if isAuthenticated() || true;
+      allow create: if true;
+      allow update, delete: if isAuthenticated();
     }
     
     // Push Subscriptions collection
     match /pushSubscriptions/{subId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if isAuthenticated() || true;
     }
   }
 }

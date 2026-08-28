@@ -85,132 +85,148 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // Fetch or create profile on Firestore
   const fetchUserProfile = async (user: FirebaseUser, defaultDistrictId?: string, defaultDistrictName?: string): Promise<UserProfile | null> => {
-    const isDirectorEmail = user.email?.toLowerCase().trim() === DEFAULT_DIRECTOR_EMAIL.toLowerCase().trim();
+    const userEmailClean = (user.email || '').toLowerCase().trim();
+    const isMainDirectorEmail = userEmailClean === DEFAULT_DIRECTOR_EMAIL.toLowerCase().trim();
     
-    // Quick optimistic profile if nothing is set
-    const optimisticFallback: UserProfile = {
-      id: user.uid,
-      fullName: user.displayName || user.email?.split('@')[0] || (isDirectorEmail ? 'Nyirabakunda Marie' : 'Administrator'),
-      email: user.email || '',
-      role: isDirectorEmail ? 'director' : 'admin',
-      districtId: isDirectorEmail ? 'nyabihu' : (defaultDistrictId || 'nyabihu'),
-      districtName: isDirectorEmail ? 'Nyabihu District' : (defaultDistrictName || 'Nyabihu District'),
-      status: isDirectorEmail ? 'approved' : 'pending',
-      position: isDirectorEmail ? 'Executive Center Director' : 'Youth Attendance Officer',
-      profilePhoto: user.photoURL || '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      lastLoginAt: new Date().toISOString(),
-    };
-
     try {
       const userRef = doc(db, 'users', user.uid);
-      const userSnap = await withTimeout(getDoc(userRef), 2500).catch(() => null);
+      const userSnap = await getDoc(userRef).catch(() => null);
 
       if (userSnap && userSnap.exists()) {
         const data = userSnap.data() as UserProfile;
         
-        let updatedProfile = { ...data };
-        if (isDirectorEmail && (data.role !== 'director' || data.status !== 'approved')) {
+        let updatedProfile: UserProfile = { ...data, id: user.uid };
+        let needsDbUpdate = false;
+
+        // Guarantee primary director email always maintains super admin director privileges
+        if (isMainDirectorEmail && (data.role !== 'director' || data.status !== 'approved')) {
           updatedProfile.role = 'director';
           updatedProfile.status = 'approved';
+          needsDbUpdate = true;
+        }
+
+        if (user.photoURL && user.photoURL !== data.profilePhoto) {
+          updatedProfile.profilePhoto = user.photoURL;
+          needsDbUpdate = true;
+        }
+
+        updatedProfile.lastLoginAt = new Date().toISOString();
+
+        if (needsDbUpdate) {
+          await setDoc(userRef, updatedProfile, { merge: true }).catch(() => {});
+        } else {
           updateDoc(userRef, {
-            role: 'director',
-            status: 'approved',
+            lastLoginAt: updatedProfile.lastLoginAt,
             updatedAt: new Date().toISOString(),
           }).catch(() => {});
         }
 
         setUserProfile(updatedProfile);
-
-        // Update last login in background
-        updateDoc(userRef, {
-          lastLoginAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }).catch(() => {});
         return updatedProfile;
-      } else {
-        // Check if pre-provisioned profile exists
-        if (user.email) {
-          try {
-            const userEmailClean = user.email.toLowerCase().trim();
-            const emailQuery = query(collection(db, 'users'), where('email', '==', userEmailClean));
-            const emailSnap = await withTimeout(getDocs(emailQuery), 2000).catch(() => null);
-
-            if (emailSnap && !emailSnap.empty) {
-              const matchedDoc = emailSnap.docs[0];
-              const preData = matchedDoc.data() as UserProfile;
-
-              const mergedProfile: UserProfile = {
-                ...preData,
-                id: user.uid,
-                fullName: preData.fullName || user.displayName || user.email?.split('@')[0] || 'Administrator',
-                profilePhoto: user.photoURL || preData.profilePhoto || '',
-                status: isDirectorEmail ? 'approved' : (preData.status || 'approved'),
-                role: isDirectorEmail ? 'director' : (preData.role || 'admin'),
-                districtId: preData.districtId || 'nyabihu',
-                districtName: preData.districtName || 'Nyabihu District',
-                lastLoginAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString(),
-              };
-
-              setDoc(userRef, mergedProfile).catch(() => {});
-              if (matchedDoc.id !== user.uid) {
-                deleteDoc(doc(db, 'users', matchedDoc.id)).catch(() => {});
-              }
-
-              setUserProfile(mergedProfile);
-              return mergedProfile;
-            }
-          } catch (e) {
-            console.warn('Pre-provisioned user lookup non-blocking error:', e);
-          }
-        }
-
-        const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || 'nyabihu')) || DEFAULT_DISTRICTS[0];
-        const assignedDistrictId = isDirectorEmail ? 'nyabihu' : (defaultDistrictId || districtObj.id);
-        const assignedDistrictName = isDirectorEmail ? 'Nyabihu District' : (defaultDistrictName || districtObj.name);
-
-        const newProfile: UserProfile = {
-          id: user.uid,
-          fullName: user.displayName || user.email?.split('@')[0] || (isDirectorEmail ? 'Nyirabakunda Marie' : 'Staff Member'),
-          email: user.email || '',
-          phone: '',
-          role: isDirectorEmail ? 'director' : 'admin',
-          districtId: assignedDistrictId,
-          districtName: assignedDistrictName,
-          status: isDirectorEmail ? 'approved' : 'pending',
-          profilePhoto: user.photoURL || '',
-          position: isDirectorEmail ? 'Executive Center Director' : 'Youth Attendance Officer',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString(),
-        };
-
-        setDoc(userRef, newProfile).catch(() => {});
-        setUserProfile(newProfile);
-
-        if (!isDirectorEmail) {
-          const notifId = `notif-req-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-          setDoc(doc(db, 'notifications', notifId), {
-            id: notifId,
-            recipientUserId: 'director_only',
-            type: 'admin_request',
-            title: 'New Admin Request',
-            message: `A new administrator account (${newProfile.fullName} - ${newProfile.districtName}) is waiting for approval.`,
-            priority: 'important',
-            districtId: newProfile.districtId,
-            isRead: false,
-            createdAt: new Date().toISOString(),
-          }).catch(() => {});
-        }
-
-        return newProfile;
       }
+
+      // Check if there is a pre-provisioned administrator account matching this email
+      let matchedPreProfile: UserProfile | null = null;
+      let matchedDocId: string | null = null;
+
+      if (userEmailClean) {
+        try {
+          const emailQuery = query(collection(db, 'users'), where('email', '==', userEmailClean));
+          const emailSnap = await getDocs(emailQuery).catch(() => null);
+
+          if (emailSnap && !emailSnap.empty) {
+            const matchedDoc = emailSnap.docs[0];
+            matchedPreProfile = matchedDoc.data() as UserProfile;
+            matchedDocId = matchedDoc.id;
+          } else {
+            // Also check case-insensitive match by scanning users if needed
+            const allUsersSnap = await getDocs(collection(db, 'users')).catch(() => null);
+            if (allUsersSnap && !allUsersSnap.empty) {
+              for (const uDoc of allUsersSnap.docs) {
+                const uData = uDoc.data() as UserProfile;
+                if (uData.email && uData.email.toLowerCase().trim() === userEmailClean) {
+                  matchedPreProfile = uData;
+                  matchedDocId = uDoc.id;
+                  break;
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.warn('Pre-provisioned user search error:', e);
+        }
+      }
+
+      const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || 'nyabihu')) || DEFAULT_DISTRICTS[0];
+      const assignedDistrictId = matchedPreProfile?.districtId || (isMainDirectorEmail ? 'nyabihu' : (defaultDistrictId || districtObj.id));
+      const assignedDistrictName = matchedPreProfile?.districtName || (isMainDirectorEmail ? 'Nyabihu District' : (defaultDistrictName || districtObj.name));
+
+      // Resolve role and approval status
+      const resolvedRole: 'director' | 'admin' = (isMainDirectorEmail || matchedPreProfile?.role === 'director') ? 'director' : (matchedPreProfile?.role || 'admin');
+      const resolvedStatus: UserStatus = (isMainDirectorEmail || matchedPreProfile?.status === 'approved') ? 'approved' : (matchedPreProfile?.status || 'pending');
+      const resolvedPosition = matchedPreProfile?.position || (resolvedRole === 'director' ? 'Executive Center Director' : 'Youth Attendance Officer');
+
+      const finalProfile: UserProfile = {
+        id: user.uid,
+        fullName: matchedPreProfile?.fullName || user.displayName || user.email?.split('@')[0] || (resolvedRole === 'director' ? 'Super Administrator' : 'Staff Member'),
+        email: user.email || userEmailClean,
+        phone: matchedPreProfile?.phone || '',
+        role: resolvedRole,
+        districtId: assignedDistrictId,
+        districtName: assignedDistrictName,
+        status: resolvedStatus,
+        position: resolvedPosition,
+        profilePhoto: user.photoURL || matchedPreProfile?.profilePhoto || '',
+        createdAt: matchedPreProfile?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+
+      // Persist finalized profile directly under user.uid
+      await setDoc(userRef, finalProfile);
+
+      // Clean up pre-provisioned temporary document if different ID
+      if (matchedDocId && matchedDocId !== user.uid) {
+        deleteDoc(doc(db, 'users', matchedDocId)).catch(() => {});
+      }
+
+      setUserProfile(finalProfile);
+
+      // If a brand new staff registered that is pending approval, notify director
+      if (resolvedStatus === 'pending') {
+        const notifId = `notif-req-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+        setDoc(doc(db, 'notifications', notifId), {
+          id: notifId,
+          recipientUserId: 'director_only',
+          type: 'admin_request',
+          title: 'New Admin Request',
+          message: `A new administrator account (${finalProfile.fullName} - ${finalProfile.districtName}) is waiting for approval.`,
+          priority: 'important',
+          districtId: finalProfile.districtId,
+          isRead: false,
+          createdAt: new Date().toISOString(),
+        }).catch(() => {});
+      }
+
+      return finalProfile;
     } catch (err) {
       console.warn('Error fetching or creating user profile in Firestore:', err);
-      setUserProfile(optimisticFallback);
-      return optimisticFallback;
+      const fallbackProfile: UserProfile = {
+        id: user.uid,
+        fullName: user.displayName || user.email?.split('@')[0] || (isMainDirectorEmail ? 'Nyirabakunda Marie' : 'Administrator'),
+        email: user.email || '',
+        role: isMainDirectorEmail ? 'director' : 'admin',
+        districtId: 'nyabihu',
+        districtName: 'Nyabihu District',
+        status: isMainDirectorEmail ? 'approved' : 'approved',
+        position: isMainDirectorEmail ? 'Executive Center Director' : 'Youth Attendance Officer',
+        profilePhoto: user.photoURL || '',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastLoginAt: new Date().toISOString(),
+      };
+      setUserProfile(fallbackProfile);
+      return fallbackProfile;
     }
   };
 
@@ -279,27 +295,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const result = await createUserWithEmailAndPassword(auth, email, pass);
       if (result.user) {
-        await updateFirebaseProfile(result.user, { displayName: fullName });
-        const userRef = doc(db, 'users', result.user.uid);
-        const isDirectorEmail = email.toLowerCase().trim() === DEFAULT_DIRECTOR_EMAIL.toLowerCase().trim();
-
-        const newProfile: UserProfile = {
-          id: result.user.uid,
-          fullName,
-          email,
-          phone,
-          role: isDirectorEmail ? 'director' : 'admin',
-          districtId,
-          districtName,
-          status: isDirectorEmail ? 'approved' : 'pending',
-          position: isDirectorEmail ? 'Executive Center Director' : 'Youth Attendance Officer',
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          lastLoginAt: new Date().toISOString(),
-        };
-
-        await setDoc(userRef, newProfile);
-        setUserProfile(newProfile);
+        await updateFirebaseProfile(result.user, { displayName: fullName }).catch(() => {});
+        await fetchUserProfile(result.user, districtId, districtName);
       }
     } finally {
       setLoading(false);
