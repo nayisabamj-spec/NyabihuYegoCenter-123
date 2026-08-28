@@ -1,6 +1,6 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAnalytics, isSupported } from 'firebase/analytics';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
 // Hardcoded Firebase configuration for nyabihu-yego-center
@@ -29,8 +29,14 @@ if (typeof window !== 'undefined') {
   });
 }
 
-// Initialize Auth
+// Initialize Auth with persistent session retention (1-3+ months)
 export const auth = getAuth(app);
+if (typeof window !== 'undefined') {
+  setPersistence(auth, browserLocalPersistence).catch((err) => {
+    console.warn('Auth local persistence configuration notice:', err);
+  });
+}
+
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account'
@@ -40,4 +46,5 @@ googleProvider.setCustomParameters({
 export const db = getFirestore(app);
 
 export const DEFAULT_DIRECTOR_EMAIL = 'nyirabakundamarie@gmail.com';
+
 

@@ -27,6 +27,14 @@ import {
 import { DEFAULT_DISTRICTS, DEFAULT_SERVICES, DEFAULT_SETTINGS } from '../data/initialData';
 import { formatDateYYYYMMDD } from '../utils/stats';
 
+// Fast timeout helper to ensure UI operations resolve immediately
+const withTimeout = <T,>(promise: Promise<T>, timeoutMs = 2500): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(undefined as unknown as T), timeoutMs)),
+  ]);
+};
+
 interface AppContextType {
   districts: District[];
   services: ServiceItem[];
@@ -132,7 +140,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
-  const [allUserProfiles, setAllUserProfiles] = useState<UserProfile[]>([]);
+  const [allUserProfiles, setAllUserProfiles] = useState<UserProfile[]>(() => {
+    try {
+      const s = localStorage.getItem('nyabihu_users_cache');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SETTINGS);
   const [loadingData, setLoadingData] = useState<boolean>(false);
@@ -140,7 +155,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Director district filter: 'all' or specific districtId
   const [activeDistrictFilter, setActiveDistrictFilter] = useState<string>('all');
 
-  // Load or sync Districts & Services & Settings in real-time
+  // Load or sync Districts, Services, Settings & Users in real-time
   useEffect(() => {
     // 1. Real-time Districts listener
     const districtsRef = collection(db, 'districts');
@@ -202,14 +217,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Settings listener info:', err);
     });
 
+    // 4. Real-time Users collection listener (Always active to ensure instant access to administrators list)
+    const usersRef = collection(db, 'users');
+    const unsubUsers = onSnapshot(usersRef, (snapshot) => {
+      if (!snapshot.empty) {
+        const users: UserProfile[] = [];
+        snapshot.forEach((doc) => {
+          users.push(doc.data() as UserProfile);
+        });
+        setAllUserProfiles(users);
+        try {
+          localStorage.setItem('nyabihu_users_cache', JSON.stringify(users));
+        } catch {}
+      }
+    }, (err) => {
+      console.warn('Users listener info:', err);
+    });
+
     return () => {
       unsubDistricts();
       unsubServices();
       unsubSettings();
+      unsubUsers();
     };
   }, []);
 
-  // Listen to Attendance, Users & Audit Logs in real-time from Firestore
+  // Listen to Attendance & Audit Logs in real-time from Firestore
   useEffect(() => {
     if (!userProfile || userProfile.status !== 'approved') {
       setAllAttendance([]);
@@ -219,7 +252,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setLoadingData(true);
     let unsubAttendance = () => {};
-    let unsubUsers = () => {};
     let unsubLogs = () => {};
 
     try {
@@ -266,18 +298,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       );
 
-      // Listen to all users for approved administrators & directors
-      const usersRef = collection(db, 'users');
-      unsubUsers = onSnapshot(usersRef, (snapshot) => {
-        const users: UserProfile[] = [];
-        snapshot.forEach((doc) => {
-          users.push(doc.data() as UserProfile);
-        });
-        setAllUserProfiles(users);
-      }, (err) => {
-        console.warn('Users listener info:', err);
-      });
-
       // Audit logs listener
       const logsRef = collection(db, 'auditLogs');
       const logsQuery = query(logsRef, orderBy('timestamp', 'desc'), limit(100));
@@ -295,7 +315,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => {
       unsubAttendance();
-      unsubUsers();
       unsubLogs();
     };
   }, [userProfile?.id, userProfile?.districtId, isDirector, userProfile?.status]);
@@ -606,18 +625,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (targetDistrictName) updates.districtName = targetDistrictName;
     if (role) updates.role = role;
 
-    setAllUserProfiles(prev =>
-      prev.map(u => (u.id === targetUserId ? { ...u, ...updates } : u))
-    );
+    setAllUserProfiles(prev => {
+      const nextList = prev.map(u => (u.id === targetUserId ? { ...u, ...updates } : u));
+      try {
+        localStorage.setItem('nyabihu_users_cache', JSON.stringify(nextList));
+      } catch {}
+      return nextList;
+    });
 
     try {
       await updateDoc(doc(db, 'users', targetUserId), updates);
-      await logAction(
+      logAction(
         `ADMIN_${status.toUpperCase()}`,
         'user',
         targetUserId,
         `Status updated to ${status}`
-      );
+      ).catch(() => {});
 
       // Trigger targeted notification for user & director
       const notifId = `notif-user-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -651,7 +674,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
-    setDistricts(prev => [...prev, newDistrict]);
+    setDistricts(prev => {
+      const next = [...prev, newDistrict];
+      try {
+        localStorage.setItem('nyabihu_districts_cache', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       await setDoc(doc(db, 'districts', id), newDistrict);
       await logAction('CREATE_DISTRICT', 'district', id, `Created district: ${name}`);
@@ -659,7 +688,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateDistrict = async (id: string, updates: Partial<District>) => {
-    setDistricts(prev => prev.map(d => (d.id === id ? { ...d, ...updates, updatedAt: new Date().toISOString() } : d)));
+    setDistricts(prev => {
+      const next = prev.map(d => (d.id === id ? { ...d, ...updates, updatedAt: new Date().toISOString() } : d));
+      try {
+        localStorage.setItem('nyabihu_districts_cache', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       await updateDoc(doc(db, 'districts', id), { ...updates, updatedAt: new Date().toISOString() });
       await logAction('UPDATE_DISTRICT', 'district', id, `Updated district ${id}`);
@@ -667,7 +702,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteDistrict = async (id: string) => {
-    setDistricts(prev => prev.filter(d => d.id !== id));
+    setDistricts(prev => {
+      const next = prev.filter(d => d.id !== id);
+      try {
+        localStorage.setItem('nyabihu_districts_cache', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       await deleteDoc(doc(db, 'districts', id));
       await logAction('DELETE_DISTRICT', 'district', id, `Deleted district ${id}`);
@@ -676,11 +717,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteUser = async (userId: string) => {
     if (!isDirector) return;
-    setAllUserProfiles(prev => prev.filter(u => u.id !== userId));
+    setAllUserProfiles(prev => {
+      const next = prev.filter(u => u.id !== userId);
+      try {
+        localStorage.setItem('nyabihu_users_cache', JSON.stringify(next));
+      } catch {}
+      return next;
+    });
     try {
       await deleteDoc(doc(db, 'users', userId));
-      await logAction('DELETE_USER', 'user', userId, `Deleted user profile ${userId}`);
-    } catch {}
+      logAction('DELETE_USER', 'user', userId, `Deleted user profile ${userId}`).catch(() => {});
+    } catch (e) {
+      console.warn('Error deleting user from Firestore:', e);
+    }
   };
 
   const createAdminUser = async (params: {
@@ -702,7 +751,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     // Check if user with this email already exists in local list
-    const existing = allUserProfiles.find(u => u.email.toLowerCase().trim() === emailClean);
+    const existing = allUserProfiles.find(u => u.email?.toLowerCase().trim() === emailClean);
     if (existing) {
       throw new Error(`An administrator with email "${emailClean}" already exists (${existing.fullName} - ${existing.role}).`);
     }
@@ -725,16 +774,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
-    setAllUserProfiles(prev => [newProfile, ...prev]);
+    setAllUserProfiles(prev => {
+      const filtered = prev.filter(u => u.id !== userId && u.email?.toLowerCase().trim() !== emailClean);
+      const nextList = [newProfile, ...filtered];
+      try {
+        localStorage.setItem('nyabihu_users_cache', JSON.stringify(nextList));
+      } catch {}
+      return nextList;
+    });
 
     try {
       await setDoc(doc(db, 'users', userId), newProfile);
-      await logAction(
+      logAction(
         params.role === 'director' ? 'CREATE_SUPER_ADMIN' : 'CREATE_ADMIN',
         'user',
         userId,
         `Created ${params.role === 'director' ? 'Super Admin' : 'Admin'}: ${newProfile.fullName} (${newProfile.email}) for ${newProfile.districtName}`
-      );
+      ).catch(() => {});
     } catch (err: any) {
       console.warn('Firestore setDoc user warning:', err);
     }

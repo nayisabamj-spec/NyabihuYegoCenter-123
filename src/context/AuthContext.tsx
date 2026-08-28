@@ -49,11 +49,24 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const AUTH_CACHE_KEY = 'nyabihu_auth_user_cache';
+const AUTH_TIMESTAMP_KEY = 'nyabihu_auth_session_time';
+const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000; // 3 months session lifespan
 
 const getInitialCachedProfile = (): UserProfile | null => {
   try {
     const cached = localStorage.getItem(AUTH_CACHE_KEY);
-    return cached ? JSON.parse(cached) : null;
+    const timestampStr = localStorage.getItem(AUTH_TIMESTAMP_KEY);
+    if (!cached) return null;
+    
+    if (timestampStr) {
+      const timestamp = parseInt(timestampStr, 10);
+      if (Date.now() - timestamp > NINETY_DAYS_MS) {
+        localStorage.removeItem(AUTH_CACHE_KEY);
+        localStorage.removeItem(AUTH_TIMESTAMP_KEY);
+        return null;
+      }
+    }
+    return JSON.parse(cached);
   } catch {
     return null;
   }
@@ -69,8 +82,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (profile) {
         localStorage.setItem(AUTH_CACHE_KEY, JSON.stringify(profile));
+        localStorage.setItem(AUTH_TIMESTAMP_KEY, Date.now().toString());
       } else {
         localStorage.removeItem(AUTH_CACHE_KEY);
+        localStorage.removeItem(AUTH_TIMESTAMP_KEY);
       }
     } catch {}
   };
@@ -241,8 +256,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser(user);
       if (user) {
         await fetchUserProfile(user);
-      } else {
-        setUserProfile(null);
       }
       setLoading(false);
     });
