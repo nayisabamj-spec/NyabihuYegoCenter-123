@@ -19,7 +19,7 @@ import {
   getDocs,
   deleteDoc,
 } from 'firebase/firestore';
-import { auth, db, googleProvider, DEFAULT_DIRECTOR_EMAIL } from '../firebase/config';
+import { auth, db, googleProvider, DEFAULT_DIRECTOR_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdminEmail } from '../firebase/config';
 import { UserProfile, UserStatus } from '../types';
 import { DEFAULT_DISTRICTS } from '../data/initialData';
 
@@ -101,7 +101,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   // Fetch or create profile on Firestore
   const fetchUserProfile = async (user: FirebaseUser, defaultDistrictId?: string, defaultDistrictName?: string): Promise<UserProfile | null> => {
     const userEmailClean = (user.email || '').toLowerCase().trim();
-    const isMainDirectorEmail = userEmailClean === DEFAULT_DIRECTOR_EMAIL.toLowerCase().trim();
+    const isSuperAdmin = isSuperAdminEmail(userEmailClean);
     
     try {
       const userRef = doc(db, 'users', user.uid);
@@ -113,8 +113,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         let updatedProfile: UserProfile = { ...data, id: user.uid };
         let needsDbUpdate = false;
 
-        // Guarantee primary director email always maintains super admin director privileges
-        if (isMainDirectorEmail && (data.role !== 'director' || data.status !== 'approved')) {
+        // Guarantee primary director and authorized super admin emails always maintain director privileges
+        if (isSuperAdmin && (data.role !== 'director' || data.status !== 'approved')) {
           updatedProfile.role = 'director';
           updatedProfile.status = 'approved';
           needsDbUpdate = true;
@@ -173,13 +173,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || 'nyabihu')) || DEFAULT_DISTRICTS[0];
-      const assignedDistrictId = matchedPreProfile?.districtId || (isMainDirectorEmail ? 'nyabihu' : (defaultDistrictId || districtObj.id));
-      const assignedDistrictName = matchedPreProfile?.districtName || (isMainDirectorEmail ? 'Nyabihu District' : (defaultDistrictName || districtObj.name));
+      const assignedDistrictId = matchedPreProfile?.districtId || (isSuperAdmin ? 'nyabihu' : (defaultDistrictId || districtObj.id));
+      const assignedDistrictName = matchedPreProfile?.districtName || (isSuperAdmin ? 'Nyabihu District' : (defaultDistrictName || districtObj.name));
 
       // Resolve role and approval status
-      const resolvedRole: 'director' | 'admin' = (isMainDirectorEmail || matchedPreProfile?.role === 'director') ? 'director' : (matchedPreProfile?.role || 'admin');
-      const resolvedStatus: UserStatus = (isMainDirectorEmail || matchedPreProfile?.status === 'approved') ? 'approved' : (matchedPreProfile?.status || 'pending');
-      const resolvedPosition = matchedPreProfile?.position || (resolvedRole === 'director' ? 'Executive Center Director' : 'Youth Attendance Officer');
+      const resolvedRole: 'director' | 'admin' = (isSuperAdmin || matchedPreProfile?.role === 'director') ? 'director' : (matchedPreProfile?.role || 'admin');
+      const resolvedStatus: UserStatus = (isSuperAdmin || matchedPreProfile?.status === 'approved') ? 'approved' : (matchedPreProfile?.status || 'pending');
+      const resolvedPosition = matchedPreProfile?.position || (resolvedRole === 'director' ? 'Super Administrator' : 'Youth Attendance Officer');
 
       const finalProfile: UserProfile = {
         id: user.uid,
@@ -228,13 +228,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       console.warn('Error fetching or creating user profile in Firestore:', err);
       const fallbackProfile: UserProfile = {
         id: user.uid,
-        fullName: user.displayName || user.email?.split('@')[0] || (isMainDirectorEmail ? 'Nyirabakunda Marie' : 'Administrator'),
+        fullName: user.displayName || user.email?.split('@')[0] || (isSuperAdmin ? 'Super Administrator' : 'Administrator'),
         email: user.email || '',
-        role: isMainDirectorEmail ? 'director' : 'admin',
+        role: isSuperAdmin ? 'director' : 'admin',
         districtId: 'nyabihu',
         districtName: 'Nyabihu District',
-        status: isMainDirectorEmail ? 'approved' : 'approved',
-        position: isMainDirectorEmail ? 'Executive Center Director' : 'Youth Attendance Officer',
+        status: isSuperAdmin ? 'approved' : 'approved',
+        position: isSuperAdmin ? 'Super Administrator' : 'Youth Attendance Officer',
         profilePhoto: user.photoURL || '',
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),

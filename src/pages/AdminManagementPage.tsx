@@ -26,6 +26,7 @@ import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
 import { UserProfile, District, UserStatus } from '../types';
+import { isSuperAdminEmail } from '../firebase/config';
 import { Badge } from '../components/common/Badge';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
@@ -478,6 +479,12 @@ export const AdminManagementPage: React.FC = () => {
                                 You
                               </span>
                             )}
+                            {isSuperAdminEmail(adm.email) && (
+                              <span className="text-[10px] bg-amber-50 text-amber-800 font-bold px-1.5 py-0.2 rounded border border-amber-200 flex items-center gap-1">
+                                <Crown className="w-2.5 h-2.5 text-amber-600" />
+                                Protected Super Admin
+                              </span>
+                            )}
                           </p>
                           <p className="text-[11px] text-slate-500">{adm.email}</p>
                           {adm.position && (
@@ -499,7 +506,11 @@ export const AdminManagementPage: React.FC = () => {
                       {adm.createdAt ? new Date(adm.createdAt).toLocaleDateString('en-GB') : '2026-01-01'}
                     </td>
                     <td className="py-3 px-4 text-right">
-                      {adm.id !== userProfile?.id ? (
+                      {isSuperAdminEmail(adm.email) ? (
+                        <span className="text-[11px] font-semibold text-amber-700 bg-amber-50/80 px-2 py-1 rounded-md border border-amber-200">
+                          Permanent Access
+                        </span>
+                      ) : adm.id !== userProfile?.id ? (
                         <div className="inline-flex items-center gap-1.5 justify-end">
                           <button
                             onClick={() => handleOpenApprove(adm)}

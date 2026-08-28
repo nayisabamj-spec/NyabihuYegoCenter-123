@@ -12,7 +12,7 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
-import { db } from '../firebase/config';
+import { db, isSuperAdminEmail, SUPER_ADMIN_EMAILS } from '../firebase/config';
 import { useAuth } from './AuthContext';
 import {
   District,
@@ -225,10 +225,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         snapshot.forEach((doc) => {
           users.push(doc.data() as UserProfile);
         });
+
+        // Ensure authorized super admin emails are in the list with director privileges
+        SUPER_ADMIN_EMAILS.forEach(superEmail => {
+          const cleanSuper = superEmail.toLowerCase().trim();
+          const found = users.find(u => u.email?.toLowerCase().trim() === cleanSuper);
+          if (!found) {
+            const isMarie = cleanSuper === 'nyirabakundamarie@gmail.com';
+            const superDoc: UserProfile = {
+              id: isMarie ? 'marie-super-admin' : 'yves-super-admin',
+              fullName: isMarie ? 'Nyirabakunda Marie' : 'M. Yves Robert',
+              email: superEmail,
+              phone: isMarie ? '+250 788 000 000' : '+250 788 123 456',
+              role: 'director',
+              districtId: 'nyabihu',
+              districtName: 'Nyabihu District',
+              status: 'approved',
+              position: 'Super Administrator',
+              createdAt: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            };
+            users.push(superDoc);
+            setDoc(doc(db, 'users', superDoc.id), superDoc).catch(() => {});
+          }
+        });
+
         setAllUserProfiles(users);
         try {
           localStorage.setItem('nyabihu_users_cache', JSON.stringify(users));
         } catch {}
+      } else {
+        // Initialize default super admins if collection is fresh
+        const initialAdmins: UserProfile[] = [
+          {
+            id: 'marie-super-admin',
+            fullName: 'Nyirabakunda Marie',
+            email: 'nyirabakundamarie@gmail.com',
+            phone: '+250 788 000 000',
+            role: 'director',
+            districtId: 'nyabihu',
+            districtName: 'Nyabihu District',
+            status: 'approved',
+            position: 'Executive Center Director (Super Admin)',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          },
+          {
+            id: 'yves-super-admin',
+            fullName: 'M. Yves Robert',
+            email: 'myvesrobert@gmail.com',
+            phone: '+250 788 123 456',
+            role: 'director',
+            districtId: 'nyabihu',
+            districtName: 'Nyabihu District',
+            status: 'approved',
+            position: 'Super Administrator',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }
+        ];
+        setAllUserProfiles(initialAdmins);
+        initialAdmins.forEach(adm => {
+          setDoc(doc(db, 'users', adm.id), adm).catch(() => {});
+        });
       }
     }, (err) => {
       console.warn('Users listener info:', err);
@@ -611,6 +670,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ) => {
     if (!isDirector) return;
 
+    const targetUser = allUserProfiles.find(u => u.id === targetUserId);
+    const isTargetSuperAdmin = isSuperAdminEmail(targetUser?.email);
+
     let targetDistrictName = undefined;
     if (assignedDistrictId) {
       const dObj = districts.find(d => d.id === assignedDistrictId);
@@ -618,12 +680,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const updates: Partial<UserProfile> = {
-      status,
+      status: isTargetSuperAdmin ? 'approved' : status,
       updatedAt: new Date().toISOString(),
     };
     if (assignedDistrictId) updates.districtId = assignedDistrictId;
     if (targetDistrictName) updates.districtName = targetDistrictName;
-    if (role) updates.role = role;
+    if (role) updates.role = isTargetSuperAdmin ? 'director' : role;
 
     setAllUserProfiles(prev => {
       const nextList = prev.map(u => (u.id === targetUserId ? { ...u, ...updates } : u));
@@ -717,6 +779,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteUser = async (userId: string) => {
     if (!isDirector) return;
+    const targetUser = allUserProfiles.find(u => u.id === userId);
+    if (isSuperAdminEmail(targetUser?.email)) {
+      throw new Error('Authorized Super Administrator accounts cannot be deleted.');
+    }
     setAllUserProfiles(prev => {
       const next = prev.filter(u => u.id !== userId);
       try {

@@ -47,4 +47,15 @@ export const db = getFirestore(app);
 
 export const DEFAULT_DIRECTOR_EMAIL = 'nyirabakundamarie@gmail.com';
 
+export const SUPER_ADMIN_EMAILS = [
+  'nyirabakundamarie@gmail.com',
+  'myvesrobert@gmail.com'
+];
+
+export const isSuperAdminEmail = (email?: string | null): boolean => {
+  if (!email) return false;
+  const clean = email.toLowerCase().trim();
+  return SUPER_ADMIN_EMAILS.some(e => e.toLowerCase().trim() === clean);
+};
+
 
