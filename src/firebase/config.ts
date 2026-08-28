@@ -11,7 +11,8 @@ export const firebaseConfig = {
   storageBucket: "nyabihu-yego-center.firebasestorage.app",
   messagingSenderId: "214676788309",
   appId: "1:214676788309:web:3ac62c22228c24ab0230dc",
-  measurementId: "G-8Q9HP3ED5L"
+  measurementId: "G-8Q9HP3ED5L",
+  firestoreDatabaseId: "(default)"
 };
 
 // Initialize Firebase
@@ -43,7 +44,7 @@ googleProvider.setCustomParameters({
 });
 
 // Initialize Firestore
-export const db = getFirestore(app);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
 
 export const DEFAULT_DIRECTOR_EMAIL = 'nyirabakundamarie@gmail.com';
 

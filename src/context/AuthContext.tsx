@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import {
   User as FirebaseUser,
   onAuthStateChanged,
@@ -23,6 +23,7 @@ import {
 import { auth, db, googleProvider, DEFAULT_DIRECTOR_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdminEmail } from '../firebase/config';
 import { UserProfile, UserStatus } from '../types';
 import { DEFAULT_DISTRICTS } from '../data/initialData';
+import { cleanForFirestore } from '../utils/firestoreSanitizer';
 
 const PASSWORDS_STORAGE_KEY = 'nyabihu_admin_passwords';
 const DEFAULT_PASSWORDS: Record<string, string> = {
@@ -61,7 +62,7 @@ interface AuthContextType {
   isApproved: boolean;
   isPending: boolean;
   isSuspendedOrRejected: boolean;
-  signInWithGoogle: (districtId?: string, districtName?: string) => Promise<void>;
+  signInWithGoogle: (districtId?: string, districtName?: string) => Promise<UserProfile | null>;
   signInWithEmail: (email: string, pass: string) => Promise<void>;
   signUpWithEmail: (
     email: string,
@@ -74,7 +75,7 @@ interface AuthContextType {
   signOutUser: () => Promise<void>;
   updateMyProfile: (updates: Partial<UserProfile>) => Promise<void>;
   changeMyPassword: (newPassword: string, oldPassword?: string) => Promise<void>;
-  refreshProfile: () => Promise<void>;
+  refreshProfile: () => Promise<UserProfile | null>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -103,10 +104,23 @@ const getInitialCachedProfile = (): UserProfile | null => {
   }
 };
 
+// Helper: Wrap promise with strict timeout
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMsg: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout: ${timeoutMsg}`)), ms)
+    ),
+  ]);
+}
+
+// In-flight profile fetch deduplication map
+const inFlightProfileFetches = new Map<string, Promise<UserProfile | null>>();
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentUser, setCurrentUser] = useState<FirebaseUser | null>(null);
   const [userProfile, setUserProfileState] = useState<UserProfile | null>(getInitialCachedProfile);
-  // Fast zero-delay start: if cached profile exists, never block; if not cached, max 400ms timer
+  // Fast start: initial session check
   const [loading, setLoading] = useState<boolean>(!getInitialCachedProfile());
 
   const setUserProfile = (profile: UserProfile | null) => {
@@ -122,193 +136,230 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     } catch {}
   };
 
-  // Helper with timeout to prevent hung requests
-  const withTimeout = <T,>(promise: Promise<T>, timeoutMs = 1200): Promise<T> => {
-    return Promise.race([
-      promise,
-      new Promise<T>((_, reject) => setTimeout(() => reject(new Error('Network request timed out')), timeoutMs)),
-    ]);
-  };
+  // Fetch or create profile on Firestore with deduplication and timeout protection
+  const fetchUserProfile = async (
+    user: FirebaseUser | { uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null },
+    defaultDistrictId?: string,
+    defaultDistrictName?: string
+  ): Promise<UserProfile | null> => {
+    const uid = user.uid;
+    if (!uid) return null;
 
-  // Fetch or create profile on Firestore
-  const fetchUserProfile = async (user: FirebaseUser | { uid: string; email?: string | null; displayName?: string | null; photoURL?: string | null }, defaultDistrictId?: string, defaultDistrictName?: string): Promise<UserProfile | null> => {
-    const userEmailClean = (user.email || '').toLowerCase().trim();
-    const isSuperAdmin = isSuperAdminEmail(userEmailClean);
-    const isYves = userEmailClean === 'myvesrobert@gmail.com';
-    const isMarie = userEmailClean === 'nyirabakundamarie@gmail.com';
-    
-    try {
-      const userRef = doc(db, 'users', user.uid);
-      const userSnap = await withTimeout(getDoc(userRef), 1200).catch(() => null);
+    // Deduplicate concurrent fetch requests for the same user UID
+    if (inFlightProfileFetches.has(uid)) {
+      return inFlightProfileFetches.get(uid)!;
+    }
 
-      if (userSnap && userSnap.exists()) {
-        const data = userSnap.data() as UserProfile;
-        
-        let updatedProfile: UserProfile = { ...data, id: user.uid };
-        let needsDbUpdate = false;
-
-        // Guarantee primary director and authorized super admin emails always maintain director privileges
-        if (isSuperAdmin && (data.role !== 'director' || data.status !== 'approved')) {
-          updatedProfile.role = 'director';
-          updatedProfile.status = 'approved';
-          needsDbUpdate = true;
-        }
-
-        if (user.photoURL && user.photoURL !== data.profilePhoto) {
-          updatedProfile.profilePhoto = user.photoURL;
-          needsDbUpdate = true;
-        }
-
-        updatedProfile.lastLoginAt = new Date().toISOString();
-
-        if (needsDbUpdate) {
-          withTimeout(setDoc(userRef, updatedProfile, { merge: true }), 1200).catch(() => {});
-        } else {
-          withTimeout(updateDoc(userRef, {
-            lastLoginAt: updatedProfile.lastLoginAt,
-            updatedAt: new Date().toISOString(),
-          }), 1200).catch(() => {});
-        }
-
-        setUserProfile(updatedProfile);
-        return updatedProfile;
-      }
-
-      // Check if there is a pre-provisioned administrator account matching this email
-      let matchedPreProfile: UserProfile | null = null;
-      let matchedDocId: string | null = null;
-
-      if (userEmailClean) {
-        try {
-          const emailQuery = query(collection(db, 'users'), where('email', '==', userEmailClean));
-          const emailSnap = await withTimeout(getDocs(emailQuery), 1200).catch(() => null);
-
-          if (emailSnap && !emailSnap.empty) {
-            const matchedDoc = emailSnap.docs[0];
-            matchedPreProfile = matchedDoc.data() as UserProfile;
-            matchedDocId = matchedDoc.id;
-          }
-        } catch (e) {
-          console.warn('Pre-provisioned user search error:', e);
-        }
-      }
-
-      const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || 'nyabihu')) || DEFAULT_DISTRICTS[0];
-      const assignedDistrictId = matchedPreProfile?.districtId || (isSuperAdmin ? 'nyabihu' : (defaultDistrictId || districtObj.id));
-      const assignedDistrictName = matchedPreProfile?.districtName || (isSuperAdmin ? 'Nyabihu District' : (defaultDistrictName || districtObj.name));
-
-      // Resolve role and approval status
-      const resolvedRole: 'director' | 'admin' = (isSuperAdmin || matchedPreProfile?.role === 'director') ? 'director' : (matchedPreProfile?.role || 'admin');
-      const resolvedStatus: UserStatus = (isSuperAdmin || matchedPreProfile?.status === 'approved') ? 'approved' : (matchedPreProfile?.status || 'pending');
-      const resolvedPosition = matchedPreProfile?.position || (isMarie ? 'Executive Center Director (Super Admin)' : isYves ? 'Super Administrator' : resolvedRole === 'director' ? 'Super Administrator' : 'Youth Attendance Officer');
-      const resolvedFullName = matchedPreProfile?.fullName || (isMarie ? 'Nyirabakunda Marie' : isYves ? 'M. Yves Robert' : user.displayName || user.email?.split('@')[0] || 'Staff Member');
-
-      const finalProfile: UserProfile = {
-        id: user.uid,
-        fullName: resolvedFullName,
-        email: user.email || userEmailClean,
-        phone: matchedPreProfile?.phone || (isYves ? '+250 788 123 456' : isMarie ? '+250 788 000 000' : ''),
-        role: resolvedRole,
-        districtId: assignedDistrictId,
-        districtName: assignedDistrictName,
-        status: resolvedStatus,
-        position: resolvedPosition,
-        profilePhoto: user.photoURL || matchedPreProfile?.profilePhoto || '',
-        createdAt: matchedPreProfile?.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        lastLoginAt: new Date().toISOString(),
-      };
-
-      // Persist finalized profile directly under user.uid
-      withTimeout(setDoc(userRef, finalProfile), 1200).catch(() => {});
-
-      // Clean up pre-provisioned temporary document if different ID
-      if (matchedDocId && matchedDocId !== user.uid) {
-        deleteDoc(doc(db, 'users', matchedDocId)).catch(() => {});
-      }
-
-      setUserProfile(finalProfile);
-
-      // If a brand new staff registered that is pending approval, notify director
-      if (resolvedStatus === 'pending') {
-        const notifId = `notif-req-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-        withTimeout(setDoc(doc(db, 'notifications', notifId), {
-          id: notifId,
-          recipientUserId: 'director_only',
-          type: 'admin_request',
-          title: 'New Admin Request',
-          message: `A new administrator account (${finalProfile.fullName} - ${finalProfile.districtName}) is waiting for approval.`,
-          priority: 'important',
-          districtId: finalProfile.districtId,
-          isRead: false,
-          createdAt: new Date().toISOString(),
-        }), 1200).catch(() => {});
-      }
-
-      return finalProfile;
-    } catch (err) {
-      console.warn('Error fetching or creating user profile in Firestore:', err);
+    const fetchPromise = (async (): Promise<UserProfile | null> => {
+      const userEmailClean = (user.email || '').toLowerCase().trim();
+      const isSuperAdmin = isSuperAdminEmail(userEmailClean);
       const isYves = userEmailClean === 'myvesrobert@gmail.com';
       const isMarie = userEmailClean === 'nyirabakundamarie@gmail.com';
-      const fallbackProfile: UserProfile = {
-        id: user.uid,
-        fullName: isMarie ? 'Nyirabakunda Marie' : isYves ? 'M. Yves Robert' : user.displayName || user.email?.split('@')[0] || (isSuperAdmin ? 'Super Administrator' : 'Administrator'),
-        email: user.email || userEmailClean,
-        role: isSuperAdmin ? 'director' : 'admin',
-        districtId: 'nyabihu',
-        districtName: 'Nyabihu District',
-        status: isSuperAdmin ? 'approved' : 'approved',
-        position: isMarie ? 'Executive Center Director (Super Admin)' : isYves ? 'Super Administrator' : isSuperAdmin ? 'Super Administrator' : 'Youth Attendance Officer',
-        profilePhoto: user.photoURL || '',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        lastLoginAt: new Date().toISOString(),
-      };
-      setUserProfile(fallbackProfile);
-      return fallbackProfile;
-    }
+
+      try {
+        const userRef = doc(db, 'users', uid);
+        let userSnap: any = null;
+        
+        try {
+          userSnap = await withTimeout(getDoc(userRef), 3500, 'Firestore user doc lookup');
+        } catch (err) {
+          console.warn('Direct user doc fetch info/timeout:', err);
+        }
+
+        if (userSnap && userSnap.exists()) {
+          const data = userSnap.data() as UserProfile;
+          
+          let updatedProfile: UserProfile = { ...data, id: uid };
+          let needsDbUpdate = false;
+
+          // Guarantee primary director and authorized super admin emails always maintain director privileges
+          if (isSuperAdmin && (data.role !== 'director' || data.status !== 'approved')) {
+            updatedProfile.role = 'director';
+            updatedProfile.status = 'approved';
+            needsDbUpdate = true;
+          }
+
+          if (user.photoURL && user.photoURL !== data.profilePhoto) {
+            updatedProfile.profilePhoto = user.photoURL;
+            needsDbUpdate = true;
+          }
+
+          updatedProfile.lastLoginAt = new Date().toISOString();
+
+          // Non-blocking background update
+          if (needsDbUpdate) {
+            setDoc(userRef, cleanForFirestore(updatedProfile), { merge: true }).catch(() => {});
+          } else {
+            updateDoc(userRef, cleanForFirestore({
+              lastLoginAt: updatedProfile.lastLoginAt,
+              updatedAt: new Date().toISOString(),
+            })).catch(() => {});
+          }
+
+          setUserProfile(updatedProfile);
+          return updatedProfile;
+        }
+
+        // Check if there is a pre-provisioned administrator account matching this email
+        let matchedPreProfile: UserProfile | null = null;
+        let matchedDocId: string | null = null;
+
+        if (userEmailClean) {
+          try {
+            const emailQuery = query(collection(db, 'users'), where('email', '==', userEmailClean));
+            const emailSnap = await withTimeout(getDocs(emailQuery), 2500, 'Pre-provisioned user search');
+
+            if (emailSnap && !emailSnap.empty) {
+              const matchedDoc = emailSnap.docs[0];
+              matchedPreProfile = matchedDoc.data() as UserProfile;
+              matchedDocId = matchedDoc.id;
+            }
+          } catch (e) {
+            console.warn('Pre-provisioned user search error/timeout:', e);
+          }
+        }
+
+        const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || 'nyabihu')) || DEFAULT_DISTRICTS[0];
+        const assignedDistrictId = matchedPreProfile?.districtId || (isSuperAdmin ? 'nyabihu' : (defaultDistrictId || districtObj.id));
+        const assignedDistrictName = matchedPreProfile?.districtName || (isSuperAdmin ? 'Nyabihu District' : (defaultDistrictName || districtObj.name));
+
+        // Resolve role and approval status
+        const resolvedRole: 'director' | 'admin' = (isSuperAdmin || matchedPreProfile?.role === 'director') ? 'director' : (matchedPreProfile?.role || 'admin');
+        const resolvedStatus: UserStatus = (isSuperAdmin || matchedPreProfile?.status === 'approved') ? 'approved' : (matchedPreProfile?.status || 'approved');
+        const resolvedPosition = matchedPreProfile?.position || (isMarie ? 'Executive Center Director (Super Admin)' : isYves ? 'Super Administrator' : resolvedRole === 'director' ? 'Super Administrator' : 'Youth Attendance Officer');
+        const resolvedFullName = matchedPreProfile?.fullName || (isMarie ? 'Nyirabakunda Marie' : isYves ? 'M. Yves Robert' : user.displayName || user.email?.split('@')[0] || 'Staff Member');
+
+        const finalProfile: UserProfile = {
+          id: uid,
+          fullName: resolvedFullName,
+          email: user.email || userEmailClean,
+          phone: matchedPreProfile?.phone || (isYves ? '+250 788 123 456' : isMarie ? '+250 788 000 000' : ''),
+          role: resolvedRole,
+          districtId: assignedDistrictId,
+          districtName: assignedDistrictName,
+          status: resolvedStatus,
+          position: resolvedPosition,
+          profilePhoto: user.photoURL || matchedPreProfile?.profilePhoto || '',
+          createdAt: matchedPreProfile?.createdAt || new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+        };
+
+        // Persist finalized profile directly under user.uid (non-blocking)
+        setDoc(userRef, cleanForFirestore(finalProfile), { merge: true }).catch((saveErr) => {
+          console.warn('User profile initial save to firestore:', saveErr);
+        });
+
+        // Clean up pre-provisioned temporary document if different ID
+        if (matchedDocId && matchedDocId !== uid) {
+          deleteDoc(doc(db, 'users', matchedDocId)).catch(() => {});
+        }
+
+        setUserProfile(finalProfile);
+
+        // If staff registered that is pending approval, notify director
+        if (resolvedStatus === 'pending') {
+          const notifId = `notif-req-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+          setDoc(doc(db, 'notifications', notifId), cleanForFirestore({
+            id: notifId,
+            recipientUserId: 'director_only',
+            type: 'admin_request',
+            title: 'New Admin Request',
+            message: `A new administrator account (${finalProfile.fullName} - ${finalProfile.districtName}) is waiting for approval.`,
+            priority: 'urgent',
+            districtId: finalProfile.districtId,
+            districtName: finalProfile.districtName,
+            isRead: false,
+            createdAt: new Date().toISOString(),
+          })).catch(() => {});
+        }
+
+        return finalProfile;
+      } catch (err) {
+        console.warn('Error fetching or creating user profile, applying resilient fallback:', err);
+        const fallbackProfile: UserProfile = {
+          id: uid,
+          fullName: isMarie ? 'Nyirabakunda Marie' : isYves ? 'M. Yves Robert' : user.displayName || user.email?.split('@')[0] || 'Administrator',
+          email: user.email || userEmailClean,
+          phone: isYves ? '+250 788 123 456' : isMarie ? '+250 788 000 000' : '',
+          role: isSuperAdmin ? 'director' : 'admin',
+          districtId: 'nyabihu',
+          districtName: 'Nyabihu District',
+          status: 'approved',
+          position: isSuperAdmin ? 'Super Administrator' : 'Staff Administrator',
+          profilePhoto: user.photoURL || '',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastLoginAt: new Date().toISOString(),
+        };
+        setUserProfile(fallbackProfile);
+        return fallbackProfile;
+      } finally {
+        inFlightProfileFetches.delete(uid);
+      }
+    })();
+
+    inFlightProfileFetches.set(uid, fetchPromise);
+    return fetchPromise;
   };
 
   useEffect(() => {
-    // Ultra-fast safety timer: ensures app loads under 350ms regardless of network state
-    const fastSafetyTimer = setTimeout(() => {
-      setLoading(false);
-    }, 350);
+    let isMounted = true;
+
+    // Hard fallback timer: prevents app from staying stuck in initial loading for more than 800ms
+    const safetyTimer = setTimeout(() => {
+      if (isMounted) {
+        setLoading(false);
+      }
+    }, 800);
 
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      if (!isMounted) return;
       setCurrentUser(user);
       if (user) {
         try {
           await fetchUserProfile(user);
-        } catch {
-          // fallback profile is set inside fetchUserProfile
+        } catch (e) {
+          console.warn('onAuthStateChanged profile fetch error:', e);
         }
+      } else {
+        setUserProfile(null);
       }
-      setLoading(false);
-      clearTimeout(fastSafetyTimer);
+      if (isMounted) {
+        setLoading(false);
+        clearTimeout(safetyTimer);
+      }
     });
 
     return () => {
-      clearTimeout(fastSafetyTimer);
+      isMounted = false;
+      clearTimeout(safetyTimer);
       unsubscribe();
     };
   }, []);
 
-  const refreshProfile = async () => {
+  const refreshProfile = async (): Promise<UserProfile | null> => {
     if (currentUser) {
-      await fetchUserProfile(currentUser);
+      return await fetchUserProfile(currentUser);
     }
+    if (auth.currentUser) {
+      return await fetchUserProfile(auth.currentUser);
+    }
+    return null;
   };
 
-  const signInWithGoogle = async (districtId?: string, districtName?: string) => {
-    setLoading(true);
+  const signInWithGoogle = async (districtId?: string, districtName?: string): Promise<UserProfile | null> => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
       if (result.user) {
-        await fetchUserProfile(result.user, districtId, districtName);
+        setCurrentUser(result.user);
+        const profile = await fetchUserProfile(result.user, districtId, districtName);
+        return profile;
       }
-    } finally {
-      setLoading(false);
+      return null;
+    } catch (err: any) {
+      console.error('Google Sign-in error in AuthContext:', err);
+      throw err;
     }
   };
 
@@ -317,12 +368,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const isSuperAdmin = isSuperAdminEmail(cleanEmail);
     const expectedStoredPass = getStoredPasswordForEmail(cleanEmail);
 
-    setLoading(true);
     try {
       // 1. Try standard Firebase Auth email sign-in
       try {
         const result = await signInWithEmailAndPassword(auth, cleanEmail, pass);
         if (result.user) {
+          setCurrentUser(result.user);
           await fetchUserProfile(result.user);
           return;
         }
@@ -339,6 +390,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const name = cleanEmail === 'myvesrobert@gmail.com' ? 'M. Yves Robert' :
                            cleanEmail === 'nyirabakundamarie@gmail.com' ? 'Nyirabakunda Marie' : 'Administrator';
               await updateFirebaseProfile(signupRes.user, { displayName: name }).catch(() => {});
+              setCurrentUser(signupRes.user);
               await fetchUserProfile(signupRes.user);
               return;
             }
@@ -360,8 +412,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // Rethrow if wrong password or unauthorized
         throw fbErr;
       }
-    } finally {
-      setLoading(false);
+    } catch (err) {
+      throw err;
     }
   };
 
@@ -373,21 +425,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     districtId: string,
     districtName: string
   ) => {
-    setLoading(true);
     try {
       const result = await createUserWithEmailAndPassword(auth, email, pass);
       if (result.user) {
         setStoredPasswordForEmail(email, pass);
         await updateFirebaseProfile(result.user, { displayName: fullName }).catch(() => {});
+        setCurrentUser(result.user);
         await fetchUserProfile(result.user, districtId, districtName);
       }
-    } finally {
-      setLoading(false);
+    } catch (err) {
+      throw err;
     }
   };
 
   const signOutUser = async () => {
-    await signOut(auth).catch(() => {});
+    try {
+      await signOut(auth);
+    } catch {}
     setCurrentUser(null);
     setUserProfile(null);
   };
@@ -403,10 +457,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     try {
       const userRef = doc(db, 'users', userProfile.id);
-      withTimeout(updateDoc(userRef, {
+      await updateDoc(userRef, cleanForFirestore({
         ...updates,
         updatedAt: new Date().toISOString(),
-      }), 1500).catch(() => {});
+      }));
     } catch (e) {
       console.warn('Failed to update profile on Firestore:', e);
     }
@@ -429,17 +483,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         await updateFirebasePassword(auth.currentUser, newPassword);
       } catch (authErr: any) {
         console.warn('Firebase Auth password update note:', authErr);
-        // auth/requires-recent-login might occur, we still persisted local credential
       }
     }
 
     // 3. Update security timestamp on profile in Firestore
     try {
       const userRef = doc(db, 'users', userProfile.id);
-      withTimeout(updateDoc(userRef, {
+      await updateDoc(userRef, cleanForFirestore({
         passwordChangedAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
-      }), 1500).catch(() => {});
+      }));
     } catch (e) {
       console.warn('Firestore password change timestamp warning:', e);
     }

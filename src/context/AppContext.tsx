@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState, useMemo } from '
 import {
   collection,
   doc,
+  getDoc,
   getDocs,
   setDoc,
   updateDoc,
@@ -26,14 +27,8 @@ import {
 } from '../types';
 import { DEFAULT_DISTRICTS, DEFAULT_SERVICES, DEFAULT_SETTINGS } from '../data/initialData';
 import { formatDateYYYYMMDD } from '../utils/stats';
-
-// Fast timeout helper to ensure UI operations resolve immediately
-const withTimeout = <T,>(promise: Promise<T>, timeoutMs = 2500): Promise<T> => {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(undefined as unknown as T), timeoutMs)),
-  ]);
-};
+import { cleanForFirestore } from '../utils/firestoreSanitizer';
+import { formatFirebaseError, withTimeout } from '../utils/firebaseErrorHelper';
 
 interface AppContextType {
   districts: District[];
@@ -43,8 +38,10 @@ interface AppContextType {
   auditLogs: AuditLog[];
   settings: SystemSettings;
   loadingData: boolean;
+  dbError: string | null;
   activeDistrictFilter: string; // 'all' or specific districtId (for Director)
   setActiveDistrictFilter: (dId: string) => void;
+  refreshAttendanceData: () => Promise<void>;
   recordVisit: (data: {
     personName: string;
     sex: Sex;
@@ -151,6 +148,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SETTINGS);
   const [loadingData, setLoadingData] = useState<boolean>(false);
+  const [dbError, setDbError] = useState<string | null>(null);
 
   // Director district filter: 'all' or specific districtId
   const [activeDistrictFilter, setActiveDistrictFilter] = useState<string>('all');
@@ -217,7 +215,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Settings listener info:', err);
     });
 
-    // 4. Real-time Users collection listener (Always active to ensure instant access to administrators list)
+    // 4. Real-time Users collection listener
     const usersRef = collection(db, 'users');
     const unsubUsers = onSnapshot(usersRef, (snapshot) => {
       if (!snapshot.empty) {
@@ -226,7 +224,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           users.push(doc.data() as UserProfile);
         });
 
-        // Ensure authorized super admin emails are in the list with director privileges
+        // Ensure authorized super admin emails are in the list with director privileges in UI state
         SUPER_ADMIN_EMAILS.forEach(superEmail => {
           const cleanSuper = superEmail.toLowerCase().trim();
           const found = users.find(u => u.email?.toLowerCase().trim() === cleanSuper);
@@ -246,7 +244,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               updatedAt: new Date().toISOString(),
             };
             users.push(superDoc);
-            setDoc(doc(db, 'users', superDoc.id), superDoc).catch(() => {});
           }
         });
 
@@ -255,7 +252,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           localStorage.setItem('nyabihu_users_cache', JSON.stringify(users));
         } catch {}
       } else {
-        // Initialize default super admins if collection is fresh
+        // Fallback default super admins if collection is fresh
         const initialAdmins: UserProfile[] = [
           {
             id: 'marie-super-admin',
@@ -285,9 +282,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         ];
         setAllUserProfiles(initialAdmins);
-        initialAdmins.forEach(adm => {
-          setDoc(doc(db, 'users', adm.id), adm).catch(() => {});
-        });
       }
     }, (err) => {
       console.warn('Users listener info:', err);
@@ -303,54 +297,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Listen to Attendance & Audit Logs in real-time from Firestore
   useEffect(() => {
-    if (!userProfile || userProfile.status !== 'approved') {
+    // If not signed in yet or not approved, do not wipe cache if we are still authenticating
+    if (!userProfile) {
+      return;
+    }
+
+    if (userProfile.status !== 'approved') {
       setAllAttendance([]);
       setLoadingData(false);
       return;
     }
 
     setLoadingData(true);
+    setDbError(null);
     let unsubAttendance = () => {};
     let unsubLogs = () => {};
 
     try {
-      // DATA ISOLATION ENFORCEMENT:
-      // If director: fetch all attendance
-      // If district admin: STRICTLY query where districtId == userProfile.districtId
+      // Listen directly to the attendance collection
       const attendanceRef = collection(db, 'attendance');
-      const attendanceQuery = isDirector
-        ? query(attendanceRef, orderBy('attendanceDate', 'desc'), limit(1500))
-        : query(attendanceRef, where('districtId', '==', userProfile.districtId), limit(1500));
 
       unsubAttendance = onSnapshot(
-        attendanceQuery,
+        attendanceRef,
         (snapshot) => {
           const records: AttendanceRecord[] = [];
           snapshot.forEach((d) => {
-            records.push(d.data() as AttendanceRecord);
+            const data = d.data() as AttendanceRecord;
+            records.push({
+              ...data,
+              id: d.id || data.id,
+              districtId: (data.districtId || 'nyabihu').toLowerCase(),
+            });
           });
-          // Sort by date & time desc
+          // Sort by date & time desc in memory
           records.sort((a, b) => {
-            const dtA = `${a.attendanceDate} ${a.attendanceTime}`;
-            const dtB = `${b.attendanceDate} ${b.attendanceTime}`;
+            const dtA = `${a.attendanceDate || ''} ${a.attendanceTime || ''}`;
+            const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
             return dtB.localeCompare(dtA);
           });
           setAllAttendance(records);
           try {
-            localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 1500)));
+            localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
           } catch {}
           setLoadingData(false);
+          setDbError(null);
         },
         (error) => {
           console.warn('Firestore attendance snapshot error, fallback to local store:', error);
+          setDbError(error?.message || 'Database connection issue. Showing local cached records.');
           const localSaved = localStorage.getItem('nyabihu_attendance_backup');
           if (localSaved) {
             try {
               const parsed = JSON.parse(localSaved) as AttendanceRecord[];
-              const filtered = isDirector
-                ? parsed
-                : parsed.filter(r => r.districtId === userProfile.districtId);
-              setAllAttendance(filtered);
+              setAllAttendance(parsed);
             } catch {}
           }
           setLoadingData(false);
@@ -359,16 +358,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Audit logs listener
       const logsRef = collection(db, 'auditLogs');
-      const logsQuery = query(logsRef, orderBy('timestamp', 'desc'), limit(100));
-      unsubLogs = onSnapshot(logsQuery, (snapshot) => {
+      unsubLogs = onSnapshot(logsRef, (snapshot) => {
         const logs: AuditLog[] = [];
-        snapshot.forEach(d => logs.push(d.data() as AuditLog));
-        setAuditLogs(logs);
+        snapshot.forEach(d => {
+          const lData = d.data() as AuditLog;
+          logs.push({ ...lData, id: d.id || lData.id });
+        });
+        logs.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+        setAuditLogs(logs.slice(0, 150));
       }, (err) => {
         console.warn('Audit logs listener info:', err);
       });
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Error setting up firestore listeners:', e);
+      setDbError(e?.message || 'Error initializing Firestore listener.');
       setLoadingData(false);
     }
 
@@ -376,7 +379,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubAttendance();
       unsubLogs();
     };
-  }, [userProfile?.id, userProfile?.districtId, isDirector, userProfile?.status]);
+  }, [userProfile?.id, userProfile?.status]);
+
+  // Explicit manual re-sync from Firestore database
+  const refreshAttendanceData = async (): Promise<void> => {
+    setLoadingData(true);
+    setDbError(null);
+    try {
+      const snap = await getDocs(collection(db, 'attendance'));
+      const records: AttendanceRecord[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as AttendanceRecord;
+        records.push({
+          ...data,
+          id: d.id || data.id,
+          districtId: (data.districtId || 'nyabihu').toLowerCase(),
+        });
+      });
+      records.sort((a, b) => {
+        const dtA = `${a.attendanceDate || ''} ${a.attendanceTime || ''}`;
+        const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
+        return dtB.localeCompare(dtA);
+      });
+      setAllAttendance(records);
+      try {
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
+      } catch {}
+      setLoadingData(false);
+    } catch (err: any) {
+      console.error('Error in refreshAttendanceData:', err);
+      setDbError(err?.message || 'Failed to reload attendance from Firebase.');
+      setLoadingData(false);
+    }
+  };
 
   // Compute filtered attendance records according to data isolation & active filter
   const attendanceRecords = useMemo(() => {
@@ -384,12 +419,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     
     // Strict isolation: if not director, ONLY ever return their own district
     if (!isDirector) {
-      return allAttendance.filter(r => r.districtId === userProfile.districtId);
+      const userDistClean = (userProfile.districtId || 'nyabihu').toLowerCase();
+      return allAttendance.filter(r => (r.districtId || 'nyabihu').toLowerCase() === userDistClean);
     }
 
     // If director: apply active district filter if selected
     if (activeDistrictFilter !== 'all') {
-      return allAttendance.filter(r => r.districtId === activeDistrictFilter);
+      const filterClean = activeDistrictFilter.toLowerCase();
+      return allAttendance.filter(r => (r.districtId || 'nyabihu').toLowerCase() === filterClean);
     }
 
     return allAttendance;
@@ -413,7 +450,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setAuditLogs(prev => [log, ...prev].slice(0, 100));
     try {
-      await setDoc(doc(db, 'auditLogs', logId), log);
+      await setDoc(doc(db, 'auditLogs', logId), cleanForFirestore(log));
     } catch {}
   };
 
@@ -449,7 +486,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Automatically use the authenticated user's district and identity with Nyabihu as default
     const newRecord: AttendanceRecord = {
       id: recordId,
-      districtId: userProfile.districtId || 'nyabihu',
+      districtId: (userProfile.districtId || 'nyabihu').toLowerCase(),
       districtName: data.district || userProfile.districtName || 'NYABIHU',
       adminId: userProfile.id,
       recordedBy: userProfile.fullName,
@@ -459,34 +496,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       serviceNameSnapshot: serviceName,
       attendanceDate: currentDate,
       attendanceTime: currentTime,
-      sector: data.sector?.trim(),
-      cell: data.cell?.trim(),
-      village: data.village?.trim(),
-      phoneNumber: data.phoneNumber?.trim(),
-      email: data.email?.trim(),
-      nationalId: data.nationalId?.trim(),
+      sector: data.sector?.trim() || '',
+      cell: data.cell?.trim() || '',
+      village: data.village?.trim() || '',
+      phoneNumber: data.phoneNumber?.trim() || '',
+      email: data.email?.trim() || '',
+      nationalId: data.nationalId?.trim() || '',
       notes: data.notes?.trim() || '',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
-    // Optimistic state update
-    setAllAttendance(prev => [newRecord, ...prev]);
-
-    // Save to local backup
+    // Firebase Persistence with reload verification
     try {
-      const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
-      localStorage.setItem('nyabihu_attendance_backup', JSON.stringify([newRecord, ...existingBackup].slice(0, 1500)));
-    } catch {}
-
-    // Firestore persistence
-    try {
-      await setDoc(doc(db, 'attendance', recordId), newRecord);
-      await logAction('RECORD_ATTENDANCE', 'attendance', recordId, `Visit recorded for ${newRecord.personName} (${newRecord.serviceNameSnapshot})`);
+      const docRef = doc(db, 'attendance', recordId);
+      const sanitized = cleanForFirestore(newRecord);
       
-      // Asynchronously trigger notification for other admins/director (non-blocking)
+      // Step 1: Write to Firestore
+      await setDoc(docRef, sanitized);
+
+      // Step 2: Reload and confirm write succeeded in Firestore
+      const verifySnap = await getDoc(docRef);
+      if (!verifySnap.exists()) {
+        throw new Error('Firestore verification failed: Document was not found in the database after saving.');
+      }
+
+      const verifiedRecord = {
+        ...(verifySnap.data() as AttendanceRecord),
+        id: recordId,
+      };
+
+      // Step 3: Update local state & backup only after Firestore confirmation
+      setAllAttendance(prev => {
+        const filtered = prev.filter(r => r.id !== recordId);
+        return [verifiedRecord, ...filtered];
+      });
+
+      try {
+        const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
+        const updatedBackup = [verifiedRecord, ...existingBackup.filter((r: AttendanceRecord) => r.id !== recordId)];
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(updatedBackup.slice(0, 3000)));
+      } catch {}
+
+      // Step 4: Non-blocking log action & notification
+      logAction('RECORD_ATTENDANCE', 'attendance', recordId, `Visit recorded for ${verifiedRecord.personName} (${verifiedRecord.serviceNameSnapshot})`).catch(() => {});
+      
       const notifId = `notif-staff-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-      setDoc(doc(db, 'notifications', notifId), {
+      setDoc(doc(db, 'notifications', notifId), cleanForFirestore({
         id: notifId,
         recipientUserId: 'all_approved_admins',
         type: 'staff_recorded',
@@ -499,12 +555,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         serviceName: serviceName,
         isRead: false,
         createdAt: new Date().toISOString(),
-      }).catch(() => {});
+      })).catch(() => {});
 
       return { success: true, id: recordId };
     } catch (err: any) {
-      console.warn('Firestore write failed, saved in local store:', err);
-      return { success: true, id: recordId };
+      console.error('CRITICAL: Firestore attendance write failed:', err);
+      // Strictly do not claim success if Firebase write failed
+      return { success: false, error: err?.message || 'Database write failed. The record could not be saved to Firestore.' };
     }
   };
 
@@ -546,34 +603,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       serviceNameSnapshot: serviceName,
       attendanceDate: currentDate,
       attendanceTime: currentTime,
-      sector: data.sector?.trim(),
-      cell: data.cell?.trim(),
-      village: data.village?.trim(),
-      phoneNumber: data.phoneNumber?.trim(),
-      email: data.email?.trim(),
-      nationalId: data.nationalId?.trim(),
+      sector: data.sector?.trim() || '',
+      cell: data.cell?.trim() || '',
+      village: data.village?.trim() || '',
+      phoneNumber: data.phoneNumber?.trim() || '',
+      email: data.email?.trim() || '',
+      nationalId: data.nationalId?.trim() || '',
       isSelfCheckIn: true,
       notes: data.notes?.trim() || 'Visitor Public Check-In',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
 
-    // Optimistic state update
-    setAllAttendance(prev => [newRecord, ...prev]);
-
-    // Save to local backup
+    // Firebase Persistence with reload verification
     try {
-      const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
-      localStorage.setItem('nyabihu_attendance_backup', JSON.stringify([newRecord, ...existingBackup].slice(0, 1500)));
-    } catch {}
+      const docRef = doc(db, 'attendance', recordId);
+      const sanitized = cleanForFirestore(newRecord);
+      
+      // Step 1: Write to Firestore
+      await setDoc(docRef, sanitized);
 
-    // Firestore persistence
-    try {
-      await setDoc(doc(db, 'attendance', recordId), newRecord);
+      // Step 2: Reload and confirm write
+      const verifySnap = await getDoc(docRef);
+      if (!verifySnap.exists()) {
+        throw new Error('Firestore verification failed: Document was not saved in the database.');
+      }
 
-      // Non-blocking notification emission for authorized admins (never delays visitor success)
+      const verifiedRecord = {
+        ...(verifySnap.data() as AttendanceRecord),
+        id: recordId,
+      };
+
+      // Step 3: Update local state & backup only after Firestore confirmation
+      setAllAttendance(prev => {
+        const filtered = prev.filter(r => r.id !== recordId);
+        return [verifiedRecord, ...filtered];
+      });
+
+      try {
+        const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
+        const updatedBackup = [verifiedRecord, ...existingBackup.filter((r: AttendanceRecord) => r.id !== recordId)];
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(updatedBackup.slice(0, 3000)));
+      } catch {}
+
+      // Non-blocking notification emission for authorized admins
       const notifId = `notif-kiosk-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-      setDoc(doc(db, 'notifications', notifId), {
+      setDoc(doc(db, 'notifications', notifId), cleanForFirestore({
         id: notifId,
         recipientUserId: 'all_approved_admins',
         type: 'new_visitor',
@@ -586,12 +661,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         serviceName: serviceName,
         isRead: false,
         createdAt: new Date().toISOString(),
-      }).catch(() => {});
+      })).catch(() => {});
 
       return { success: true, id: recordId };
     } catch (err: any) {
-      console.warn('Firestore write failed, saved in local store:', err);
-      return { success: true, id: recordId };
+      console.error('CRITICAL: Firestore visitor checkin failed:', err);
+      return { success: false, error: err?.message || 'Database write failed. Check your internet connection.' };
     }
   };
 
@@ -617,25 +692,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (srv) updatedSnapshot = srv.name;
     }
 
-    const updatedRecord: AttendanceRecord = {
-      ...existing,
-      ...updates,
-      serviceNameSnapshot: updatedSnapshot,
-      updatedAt: new Date().toISOString(),
-    };
-
-    setAllAttendance(prev => prev.map(r => (r.id === id ? updatedRecord : r)));
-
     try {
-      await updateDoc(doc(db, 'attendance', id), {
+      const docRef = doc(db, 'attendance', id);
+      await updateDoc(docRef, cleanForFirestore({
         ...updates,
         serviceNameSnapshot: updatedSnapshot,
         updatedAt: new Date().toISOString(),
-      });
-      await logAction('EDIT_ATTENDANCE', 'attendance', id, `Updated record for ${updatedRecord.personName}`);
+      }));
+
+      // Reload and confirm
+      const verifySnap = await getDoc(docRef);
+      if (!verifySnap.exists()) {
+        throw new Error('Firestore verification failed: Updated document not found.');
+      }
+      const verified = {
+        ...(verifySnap.data() as AttendanceRecord),
+        id,
+      };
+
+      setAllAttendance(prev => prev.map(r => (r.id === id ? verified : r)));
+      
+      try {
+        const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
+        const updatedBackup = existingBackup.map((r: AttendanceRecord) => (r.id === id ? verified : r));
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(updatedBackup.slice(0, 3000)));
+      } catch {}
+
+      await logAction('EDIT_ATTENDANCE', 'attendance', id, `Updated record for ${verified.personName}`);
       return { success: true };
     } catch (err: any) {
-      return { success: true };
+      console.error('Error updating attendance in Firestore:', err);
+      return { success: false, error: err?.message || 'Failed to update record in Firestore' };
     }
   };
 
@@ -650,14 +737,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Unauthorized to delete another district record' };
     }
 
-    setAllAttendance(prev => prev.filter(r => r.id !== id));
-
     try {
-      await deleteDoc(doc(db, 'attendance', id));
+      const docRef = doc(db, 'attendance', id);
+      await deleteDoc(docRef);
+
+      // Verify deletion from database
+      const verifySnap = await getDoc(docRef);
+      if (verifySnap.exists()) {
+        throw new Error('Firestore delete verification failed: Document still exists.');
+      }
+
+      setAllAttendance(prev => prev.filter(r => r.id !== id));
+      
+      try {
+        const currentBackup: AttendanceRecord[] = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(currentBackup.filter(r => r.id !== id)));
+      } catch {}
+
       await logAction('DELETE_ATTENDANCE', 'attendance', id, `Deleted record for ${existing.personName} (${existing.serviceNameSnapshot})`);
       return { success: true };
-    } catch {
-      return { success: true };
+    } catch (err: any) {
+      console.error('Error deleting attendance record from Firestore:', err);
+      return { success: false, error: err?.message || 'Failed to delete record from Firestore' };
     }
   };
 
@@ -696,7 +797,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     try {
-      await updateDoc(doc(db, 'users', targetUserId), updates);
+      await updateDoc(doc(db, 'users', targetUserId), cleanForFirestore(updates));
       logAction(
         `ADMIN_${status.toUpperCase()}`,
         'user',
@@ -706,7 +807,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Trigger targeted notification for user & director
       const notifId = `notif-user-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-      setDoc(doc(db, 'notifications', notifId), {
+      setDoc(doc(db, 'notifications', notifId), cleanForFirestore({
         id: notifId,
         recipientUserId: targetUserId,
         type: status === 'approved' ? 'admin_approved' : status === 'suspended' ? 'admin_suspended' : 'system_alert',
@@ -718,7 +819,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         districtId: assignedDistrictId || 'nyabihu',
         isRead: false,
         createdAt: new Date().toISOString(),
-      }).catch(() => {});
+      })).catch(() => {});
     } catch (e) {
       console.warn('Error updating user status on Firestore:', e);
     }
@@ -744,7 +845,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return next;
     });
     try {
-      await setDoc(doc(db, 'districts', id), newDistrict);
+      await setDoc(doc(db, 'districts', id), cleanForFirestore(newDistrict));
       await logAction('CREATE_DISTRICT', 'district', id, `Created district: ${name}`);
     } catch {}
   };
@@ -758,7 +859,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return next;
     });
     try {
-      await updateDoc(doc(db, 'districts', id), { ...updates, updatedAt: new Date().toISOString() });
+      await updateDoc(doc(db, 'districts', id), cleanForFirestore({ ...updates, updatedAt: new Date().toISOString() }));
       await logAction('UPDATE_DISTRICT', 'district', id, `Updated district ${id}`);
     } catch {}
   };
@@ -850,7 +951,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     try {
-      await setDoc(doc(db, 'users', userId), newProfile);
+      await setDoc(doc(db, 'users', userId), cleanForFirestore(newProfile));
       logAction(
         params.role === 'director' ? 'CREATE_SUPER_ADMIN' : 'CREATE_ADMIN',
         'user',
@@ -863,7 +964,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Trigger notification for admins
     const notifId = `notif-user-created-${Date.now()}`;
-    setDoc(doc(db, 'notifications', notifId), {
+    setDoc(doc(db, 'notifications', notifId), cleanForFirestore({
       id: notifId,
       recipientUserId: 'all_approved_admins',
       type: 'admin_approved',
@@ -873,7 +974,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       districtId: assignedDistrictId,
       isRead: false,
       createdAt: new Date().toISOString(),
-    }).catch(() => {});
+    })).catch(() => {});
 
     return newProfile;
   };
@@ -893,7 +994,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setServices(prev => [...prev, newService]);
     try {
-      await setDoc(doc(db, 'services', id), newService);
+      await setDoc(doc(db, 'services', id), cleanForFirestore(newService));
       await logAction('CREATE_SERVICE', 'service', id, `Added service: ${name}`);
     } catch {}
   };
@@ -901,7 +1002,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateService = async (id: string, updates: Partial<ServiceItem>) => {
     setServices(prev => prev.map(s => (s.id === id ? { ...s, ...updates, updatedAt: new Date().toISOString() } : s)));
     try {
-      await updateDoc(doc(db, 'services', id), { ...updates, updatedAt: new Date().toISOString() });
+      await updateDoc(doc(db, 'services', id), cleanForFirestore({ ...updates, updatedAt: new Date().toISOString() }));
       await logAction('UPDATE_SERVICE', 'service', id, `Updated service ${id}`);
     } catch {}
   };
@@ -925,7 +1026,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updated = { ...settings, ...updates, updatedAt: new Date().toISOString() };
     setSettings(updated);
     try {
-      await setDoc(doc(db, 'settings', 'general'), updated, { merge: true });
+      await setDoc(doc(db, 'settings', 'general'), cleanForFirestore(updated), { merge: true });
       await logAction('UPDATE_SETTINGS', 'settings', 'general', 'Updated center settings');
     } catch (e) {
       console.warn('Error saving settings to Firestore:', e);
@@ -1027,8 +1128,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch {}
 
     // Save sample records to firestore
-    for (const r of generatedRecords.slice(0, 30)) {
-      setDoc(doc(db, 'attendance', r.id), r).catch(() => {});
+    for (const r of generatedRecords.slice(0, 50)) {
+      setDoc(doc(db, 'attendance', r.id), cleanForFirestore(r)).catch(() => {});
     }
 
     await logAction('SEED_DATA', 'system', 'attendance', `Seeded ${generatedRecords.length} records for reporting analysis`);

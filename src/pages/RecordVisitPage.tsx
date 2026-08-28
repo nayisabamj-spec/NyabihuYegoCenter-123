@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import {
   UserPlus,
   CheckCircle2,
+  AlertCircle,
   Clock,
   Calendar,
   Building2,
@@ -56,6 +57,7 @@ export const RecordVisitPage: React.FC = () => {
 
   const [saving, setSaving] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastRecordedName, setLastRecordedName] = useState<string | null>(null);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -81,8 +83,8 @@ export const RecordVisitPage: React.FC = () => {
 
   const activeServices = services.filter(s => s.status === 'active');
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!personName.trim()) {
       nameInputRef.current?.focus();
       return;
@@ -97,6 +99,7 @@ export const RecordVisitPage: React.FC = () => {
 
     setSaving(true);
     setSuccessMessage(null);
+    setErrorMessage(null);
 
     const finalSector = isOtherDistrict ? customSector.trim() : (sector || customSector.trim());
 
@@ -122,8 +125,8 @@ export const RecordVisitPage: React.FC = () => {
       const recorded = personName.trim();
       const srvObj = services.find(s => s.id === selectedServiceId);
       setLastRecordedName(recorded);
-      setSuccessMessage(`Visit recorded successfully for ${recorded}!`);
-      toast.success('Byagenze Neza / Visit Recorded!', `${recorded} (${srvObj?.name || 'Service'}) logged.`);
+      setSuccessMessage(`Visit recorded and verified in Firebase for ${recorded}!`);
+      toast.success('Byagenze Neza / Visit Recorded!', `${recorded} (${srvObj?.name || 'Service'}) saved.`);
       setPersonName('');
       setCell('');
       setVillage('');
@@ -136,12 +139,14 @@ export const RecordVisitPage: React.FC = () => {
         nameInputRef.current?.focus();
       }, 100);
 
-      // Auto-hide success message after 4s
+      // Auto-hide success message after 5s
       setTimeout(() => {
         setSuccessMessage(null);
-      }, 4000);
+      }, 5000);
     } else {
-      toast.error('Gufata Amakuru Byanze / Error', result.error || 'Failed to record visit.');
+      const errorMsg = result.error || 'Failed to record visit in Firebase. Please check your internet connection.';
+      setErrorMessage(errorMsg);
+      toast.error('Gufata Amakuru Byanze / Error', errorMsg);
     }
   };
 
@@ -181,7 +186,7 @@ export const RecordVisitPage: React.FC = () => {
             </div>
             <div>
               <p className="text-sm font-bold">{successMessage}</p>
-              <p className="text-xs text-emerald-700 mt-0.5">Ready for the next person.</p>
+              <p className="text-xs text-emerald-700 mt-0.5">Saved and verified in Firebase. Ready for the next person.</p>
             </div>
           </div>
           <button
@@ -190,6 +195,35 @@ export const RecordVisitPage: React.FC = () => {
           >
             Dismiss
           </button>
+        </div>
+      )}
+
+      {/* Error Notification Banner with Retry */}
+      {errorMessage && (
+        <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 flex items-center justify-between shadow-xs animate-in fade-in slide-in-from-top-2">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-full bg-rose-500 text-white flex items-center justify-center shrink-0">
+              <AlertCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold">Persistence Failed</p>
+              <p className="text-xs text-rose-700 mt-0.5">{errorMessage}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => handleSubmit()}
+              className="text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+            >
+              Retry Saving
+            </button>
+            <button
+              onClick={() => setErrorMessage(null)}
+              className="text-xs font-bold text-rose-800 hover:text-rose-950 px-2 py-1 cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 

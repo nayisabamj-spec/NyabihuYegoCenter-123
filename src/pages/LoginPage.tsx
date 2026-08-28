@@ -14,6 +14,7 @@ import {
   Clock,
   Eye,
   EyeOff,
+  RefreshCw,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
@@ -35,6 +36,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onBackToLanding }) => {
     isPending,
     isSuspendedOrRejected,
     signOutUser,
+    refreshProfile,
   } = useAuth();
   const { districts } = useApp();
 
@@ -47,6 +49,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onBackToLanding }) => {
   const [selectedDistrictId, setSelectedDistrictId] = useState('nyabihu');
   const [errorMsg, setErrorMsg] = useState('');
   const [loading, setLoading] = useState(false);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
 
   const availableDistricts = districts.length > 0 ? districts : DEFAULT_DISTRICTS;
 
@@ -123,6 +126,17 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onBackToLanding }) => {
     }
   };
 
+  const handleRefreshStatus = async () => {
+    setRefreshingStatus(true);
+    try {
+      await refreshProfile();
+    } catch (e) {
+      console.warn('Status refresh error:', e);
+    } finally {
+      setTimeout(() => setRefreshingStatus(false), 500);
+    }
+  };
+
   // If user account is suspended or rejected
   if (userProfile && isSuspendedOrRejected) {
     return (
@@ -190,14 +204,24 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onBackToLanding }) => {
             To prevent unauthorized access, center attendance records remain protected until your identity and district role are approved.
           </p>
 
-          <div className="mt-6">
+          <div className="mt-6 space-y-2">
+            <Button
+              variant="primary"
+              size="md"
+              loading={refreshingStatus}
+              onClick={handleRefreshStatus}
+              icon={<RefreshCw className={`w-4 h-4 ${refreshingStatus ? 'animate-spin' : ''}`} />}
+              fullWidth
+            >
+              {refreshingStatus ? 'Checking Status...' : 'Check Approval Status'}
+            </Button>
             <Button
               variant="outline"
               size="md"
               onClick={signOutUser}
               fullWidth
             >
-              Sign Out & Return
+              Sign Out & Try Another Account
             </Button>
           </div>
         </div>
@@ -270,28 +294,34 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onBackToLanding }) => {
               disabled={loading}
               className="w-full flex items-center justify-center gap-3 bg-white hover:bg-slate-50 active:bg-slate-100 text-slate-700 font-semibold py-3 px-4 rounded-xl border border-slate-300 shadow-xs transition-colors cursor-pointer disabled:opacity-50"
             >
-              <svg className="w-5 h-5" viewBox="0 0 24 24">
-                <path
-                  fill="#4285F4"
-                  d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
-                />
-                <path
-                  fill="#34A853"
-                  d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.36 24 12 24Z"
-                />
-                <path
-                  fill="#FBBC05"
-                  d="M5.28 14.27A7.16 7.16 0 0 1 4.9 12c0-.79.14-1.56.38-2.27V6.58H1.25A11.96 11.96 0 0 0 0 12c0 1.92.45 3.74 1.25 5.42l4.03-3.15Z"
-                />
-                <path
-                  fill="#EA4335"
-                  d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98Z"
-                />
-              </svg>
-              <span className="text-sm">Continue with Google</span>
+              {loading ? (
+                <div className="w-5 h-5 border-2 border-slate-400 border-t-[#23285E] rounded-full animate-spin"></div>
+              ) : (
+                <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17Z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.36 24 12 24Z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.27A7.16 7.16 0 0 1 4.9 12c0-.79.14-1.56.38-2.27V6.58H1.25A11.96 11.96 0 0 0 0 12c0 1.92.45 3.74 1.25 5.42l4.03-3.15Z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98Z"
+                  />
+                </svg>
+              )}
+              <span className="text-sm">
+                {loading ? 'Authenticating with Google...' : 'Continue with Google'}
+              </span>
             </button>
             <p className="text-[11px] text-slate-400 text-center mt-2">
-              Authorized Google accounts will be verified automatically.
+              Super Administrators and authorized staff are verified instantly.
             </p>
           </div>
 

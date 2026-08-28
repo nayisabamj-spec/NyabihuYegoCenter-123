@@ -19,7 +19,8 @@ import {
   FileSpreadsheet,
   TableProperties,
   SlidersHorizontal,
-  Sliders
+  Sliders,
+  RefreshCw
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
@@ -47,7 +48,16 @@ interface AttendancePageProps {
 
 export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToRecord }) => {
   const { userProfile, isDirector } = useAuth();
-  const { attendanceRecords, services, districts, editAttendance, deleteAttendance } = useApp();
+  const {
+    attendanceRecords,
+    services,
+    districts,
+    editAttendance,
+    deleteAttendance,
+    loadingData,
+    dbError,
+    refreshAttendanceData,
+  } = useApp();
   const { toast } = useToast();
 
   // Column Customization State
@@ -63,6 +73,19 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [excelGenerating, setExcelGenerating] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await refreshAttendanceData();
+      toast.success('Database Synchronized', 'Attendance records reloaded from Firestore.');
+    } catch {
+      toast.error('Sync Failed', 'Failed to refresh records from database.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   // Pagination
   const [currentPage, setCurrentPage] = useState(1);
@@ -225,6 +248,16 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
           <Button
             variant="outline"
             size="sm"
+            onClick={handleRefresh}
+            loading={refreshing}
+            icon={<RefreshCw className={`w-4 h-4 text-[#3591C8] ${refreshing ? 'animate-spin' : ''}`} />}
+            className="border-slate-300 hover:border-[#3591C8]"
+          >
+            Sync
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => setIsColumnModalOpen(true)}
             icon={<SlidersHorizontal className="w-4 h-4 text-[#3591C8]" />}
             className="border-slate-300 hover:border-[#3591C8]"
@@ -261,6 +294,22 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
           </Button>
         </div>
       </div>
+
+      {/* Database Error or Connection Warning Banner */}
+      {dbError && (
+        <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+            <span>Database alert: {dbError}</span>
+          </div>
+          <button
+            onClick={handleRefresh}
+            className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg transition-colors cursor-pointer shrink-0"
+          >
+            Retry Sync
+          </button>
+        </div>
+      )}
 
       {/* Search and Filters Bar */}
       <div className="bg-white p-5 rounded-2xl border border-slate-200 shadow-xs space-y-4">
@@ -345,20 +394,29 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
 
       {/* Attendance Data Content: Mobile Cards + Desktop Table */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-        {paginatedRecords.length === 0 ? (
+        {loadingData && attendanceRecords.length === 0 ? (
+          <div className="p-12 text-center">
+            <div className="w-10 h-10 border-4 border-[#3591C8] border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+            <h3 className="text-sm font-bold text-[#23285E]">Loading records from Firebase...</h3>
+            <p className="text-xs text-slate-500 mt-1">Retrieving persistent attendance records for Nyabihu YEGO Center.</p>
+          </div>
+        ) : paginatedRecords.length === 0 ? (
           <div className="p-12 text-center">
             <div className="w-12 h-12 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
               <Calendar className="w-6 h-6" />
             </div>
-            <h3 className="text-base font-bold text-[#23285E]">No visits recorded yet</h3>
+            <h3 className="text-base font-bold text-[#23285E]">No attendance records found.</h3>
             <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
               {hasActiveFilters
                 ? 'No records match your selected search filters. Try adjusting your dates or resetting filters.'
-                : 'Start by recording today\'s first visit using the check-in form.'}
+                : 'No attendance records are saved yet. Start by recording a new youth visit using the check-in form.'}
             </p>
-            <div className="mt-4">
+            <div className="mt-4 flex items-center justify-center gap-3">
               <Button variant="primary" size="md" onClick={onNavigateToRecord} icon={<UserPlus className="w-4 h-4 text-[#E6E65A]" />}>
                 Record Visit
+              </Button>
+              <Button variant="outline" size="md" onClick={handleRefresh} icon={<RefreshCw className="w-4 h-4 text-[#3591C8]" />}>
+                Refresh Data
               </Button>
             </div>
           </div>

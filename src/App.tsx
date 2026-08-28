@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AppProvider } from './context/AppContext';
 import { NotificationProvider } from './context/NotificationContext';
@@ -11,12 +11,20 @@ import { LoginPage } from './pages/LoginPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { RecordVisitPage } from './pages/RecordVisitPage';
 import { AttendancePage } from './pages/AttendancePage';
-import { ReportsPage } from './pages/ReportsPage';
-import { ServicesPage } from './pages/ServicesPage';
-import { ProfilePage } from './pages/ProfilePage';
-import { AdminManagementPage } from './pages/AdminManagementPage';
-import { NotificationsPage } from './pages/NotificationsPage';
 import { Logo } from './components/common/Logo';
+
+// Lazy load secondary pages to optimize initial bundle size & load speed
+const ReportsPage = lazy(() => import('./pages/ReportsPage').then(m => ({ default: m.ReportsPage })));
+const ServicesPage = lazy(() => import('./pages/ServicesPage').then(m => ({ default: m.ServicesPage })));
+const ProfilePage = lazy(() => import('./pages/ProfilePage').then(m => ({ default: m.ProfilePage })));
+const AdminManagementPage = lazy(() => import('./pages/AdminManagementPage').then(m => ({ default: m.AdminManagementPage })));
+const NotificationsPage = lazy(() => import('./pages/NotificationsPage').then(m => ({ default: m.NotificationsPage })));
+
+const PageLoaderFallback = () => (
+  <div className="flex items-center justify-center p-12 min-h-[300px]">
+    <div className="w-8 h-8 border-3 border-[#23285E]/20 border-t-[#23285E] rounded-full animate-spin"></div>
+  </div>
+);
 
 function AppContent() {
   const { userProfile, loading, isPending, isSuspendedOrRejected, isApproved, isDirector } = useAuth();
@@ -84,27 +92,30 @@ function AppContent() {
   // Authenticated & Approved view
   return (
     <AppLayout activeRoute={activeRoute} onRouteChange={setActiveRoute}>
-      {activeRoute === 'dashboard' && (
-        <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
-      )}
-      {activeRoute === 'record' && <RecordVisitPage />}
-      {activeRoute === 'attendance' && (
-        <AttendancePage onNavigateToRecord={() => setActiveRoute('record')} />
-      )}
-      {activeRoute === 'reports' && <ReportsPage />}
-      {activeRoute === 'notifications' && (
-        <NotificationsPage onNavigateToRoute={(route) => setActiveRoute(route)} />
-      )}
-      {activeRoute === 'services' && <ServicesPage />}
-      {activeRoute === 'profile' && <ProfilePage />}
-      {activeRoute === 'admin' && isDirector && <AdminManagementPage />}
-      {activeRoute === 'admin' && !isDirector && (
-        <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
-      )}
+      <Suspense fallback={<PageLoaderFallback />}>
+        {activeRoute === 'dashboard' && (
+          <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
+        )}
+        {activeRoute === 'record' && <RecordVisitPage />}
+        {activeRoute === 'attendance' && (
+          <AttendancePage onNavigateToRecord={() => setActiveRoute('record')} />
+        )}
+        {activeRoute === 'reports' && <ReportsPage />}
+        {activeRoute === 'notifications' && (
+          <NotificationsPage onNavigateToRoute={(route) => setActiveRoute(route)} />
+        )}
+        {activeRoute === 'services' && <ServicesPage />}
+        {activeRoute === 'profile' && <ProfilePage />}
+        {activeRoute === 'admin' && isDirector && <AdminManagementPage />}
+        {activeRoute === 'admin' && !isDirector && (
+          <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
+        )}
+      </Suspense>
       <ToastContainer />
     </AppLayout>
   );
 }
+
 
 export default function App() {
   return (
