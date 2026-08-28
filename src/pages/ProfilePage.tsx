@@ -9,7 +9,12 @@ import {
   Clock,
   CheckCircle2,
   Edit2,
-  LogOut
+  LogOut,
+  Lock,
+  KeyRound,
+  Eye,
+  EyeOff,
+  AlertCircle,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
@@ -18,7 +23,7 @@ import { Button } from '../components/common/Button';
 import { PWAInstallPrompt } from '../components/common/PWAInstallPrompt';
 
 export const ProfilePage: React.FC = () => {
-  const { userProfile, updateMyProfile, signOutUser } = useAuth();
+  const { userProfile, updateMyProfile, changeMyPassword, signOutUser } = useAuth();
   const { toast } = useToast();
 
   const [isEditing, setIsEditing] = useState(false);
@@ -26,6 +31,15 @@ export const ProfilePage: React.FC = () => {
   const [phone, setPhone] = useState(userProfile?.phone || '');
   const [position, setPosition] = useState(userProfile?.position || '');
   const [saving, setSaving] = useState(false);
+
+  // Password Change State
+  const [showPasswordSection, setShowPasswordSection] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [passwordError, setPasswordError] = useState('');
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,6 +52,38 @@ export const ProfilePage: React.FC = () => {
     setSaving(false);
     setIsEditing(false);
     toast.success('Profile Updated', 'Your administrator information has been saved.');
+  };
+
+  const handlePasswordChange = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordError('');
+
+    if (!newPassword) {
+      setPasswordError('Please enter a new password.');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPasswordError('Password must be at least 6 characters long.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordError('New password and confirmation do not match.');
+      return;
+    }
+
+    setPasswordSaving(true);
+    try {
+      await changeMyPassword(newPassword);
+      toast.success('Password Updated', 'Your password has been changed successfully. You can now use it on your next login.');
+      setNewPassword('');
+      setConfirmPassword('');
+      setShowPasswordSection(false);
+    } catch (err: any) {
+      setPasswordError(err.message || 'Failed to update password. Please try again.');
+      toast.error('Password Update Failed', err.message || 'Please try again.');
+    } finally {
+      setPasswordSaving(false);
+    }
   };
 
   return (
@@ -201,8 +247,125 @@ export const ProfilePage: React.FC = () => {
         </div>
       </div>
 
+      {/* Security & Password Change Card */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
+        <div className="p-5 sm:p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-50 border border-amber-200 text-amber-600 flex items-center justify-center">
+              <KeyRound className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-[#23285E]">Account Security & Password</h3>
+              <p className="text-xs text-slate-500">
+                Manage and update your personal password for email sign-in
+              </p>
+            </div>
+          </div>
+
+          {!showPasswordSection && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowPasswordSection(true)}
+              icon={<Lock className="w-3.5 h-3.5" />}
+            >
+              Change Password
+            </Button>
+          )}
+        </div>
+
+        {showPasswordSection && (
+          <form onSubmit={handlePasswordChange} className="p-6 sm:p-8 space-y-4">
+            {passwordError && (
+              <div className="p-3 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{passwordError}</span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-[#23285E] mb-1">
+                  New Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showNewPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    placeholder="Enter at least 6 characters"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-[#1F222C] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#3591C8]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowNewPassword(!showNewPassword)}
+                    className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <p className="text-[11px] text-slate-400 mt-1">Minimum 6 characters</p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-[#23285E] mb-1">
+                  Confirm New Password *
+                </label>
+                <div className="relative">
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    required
+                    minLength={6}
+                    placeholder="Confirm new password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className="w-full pl-3 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm text-[#1F222C] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#3591C8]"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                    className="absolute right-3 top-3 text-slate-400 hover:text-slate-600 cursor-pointer"
+                  >
+                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setShowPasswordSection(false);
+                  setPasswordError('');
+                  setNewPassword('');
+                  setConfirmPassword('');
+                }}
+                disabled={passwordSaving}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="primary"
+                size="sm"
+                loading={passwordSaving}
+                icon={<CheckCircle2 className="w-4 h-4" />}
+              >
+                Update Password
+              </Button>
+            </div>
+          </form>
+        )}
+      </div>
+
       {/* PWA App Install & Offline Capability */}
       <PWAInstallPrompt variant="card" />
     </div>
   );
 };
+
