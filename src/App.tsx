@@ -12,6 +12,8 @@ import { DashboardPage } from './pages/DashboardPage';
 import { RecordVisitPage } from './pages/RecordVisitPage';
 import { AttendancePage } from './pages/AttendancePage';
 import { Logo } from './components/common/Logo';
+import { NetworkStatusBanner } from './components/common/NetworkStatusBanner';
+import { useApp } from './context/AppContext';
 
 // Lazy load secondary pages to optimize initial bundle size & load speed
 const ReportsPage = lazy(() => import('./pages/ReportsPage').then(m => ({ default: m.ReportsPage })));
@@ -76,6 +78,7 @@ function AppContent() {
     if (authView === 'login' || isPending || isSuspendedOrRejected) {
       return (
         <>
+          <NetworkStatusBanner />
           <LoginPage onBackToLanding={() => setAuthView('landing')} />
           <ToastContainer />
         </>
@@ -83,6 +86,7 @@ function AppContent() {
     }
     return (
       <>
+        <NetworkStatusBanner />
         <LandingPage onLoginClick={() => setAuthView('login')} />
         <ToastContainer />
       </>
@@ -91,28 +95,31 @@ function AppContent() {
 
   // Authenticated & Approved view
   return (
-    <AppLayout activeRoute={activeRoute} onRouteChange={setActiveRoute}>
-      <Suspense fallback={<PageLoaderFallback />}>
-        {activeRoute === 'dashboard' && (
-          <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
-        )}
-        {activeRoute === 'record' && <RecordVisitPage />}
-        {activeRoute === 'attendance' && (
-          <AttendancePage onNavigateToRecord={() => setActiveRoute('record')} />
-        )}
-        {activeRoute === 'reports' && <ReportsPage />}
-        {activeRoute === 'notifications' && (
-          <NotificationsPage onNavigateToRoute={(route) => setActiveRoute(route)} />
-        )}
-        {activeRoute === 'services' && <ServicesPage />}
-        {activeRoute === 'profile' && <ProfilePage />}
-        {activeRoute === 'admin' && isDirector && <AdminManagementPage />}
-        {activeRoute === 'admin' && !isDirector && (
-          <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
-        )}
-      </Suspense>
-      <ToastContainer />
-    </AppLayout>
+    <>
+      <NetworkStatusBanner />
+      <AppLayout activeRoute={activeRoute} onRouteChange={setActiveRoute}>
+        <Suspense fallback={<PageLoaderFallback />}>
+          {activeRoute === 'dashboard' && (
+            <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
+          )}
+          {activeRoute === 'record' && <RecordVisitPage />}
+          {activeRoute === 'attendance' && (
+            <AttendancePage onNavigateToRecord={() => setActiveRoute('record')} />
+          )}
+          {activeRoute === 'reports' && <ReportsPage />}
+          {activeRoute === 'notifications' && (
+            <NotificationsPage onNavigateToRoute={(route) => setActiveRoute(route)} />
+          )}
+          {activeRoute === 'services' && <ServicesPage />}
+          {activeRoute === 'profile' && <ProfilePage />}
+          {activeRoute === 'admin' && isDirector && <AdminManagementPage />}
+          {activeRoute === 'admin' && !isDirector && (
+            <DashboardPage onNavigate={(route) => setActiveRoute(route)} />
+          )}
+        </Suspense>
+        <ToastContainer />
+      </AppLayout>
+    </>
   );
 }
 

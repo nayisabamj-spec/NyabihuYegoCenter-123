@@ -26,3 +26,20 @@ export function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
 
   return cleaned as T;
 }
+
+/**
+ * Wraps a promise with a timeout to guarantee it never hangs indefinitely.
+ */
+export const withTimeout = <T>(
+  promise: Promise<T>,
+  timeoutMs: number = 8000,
+  timeoutErrorMsg: string = 'Operation timed out'
+): Promise<T> => {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(timeoutErrorMsg)), timeoutMs)
+    ),
+  ]);
+};
+

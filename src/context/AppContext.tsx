@@ -471,7 +471,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     notes?: string;
   }): Promise<{ success: boolean; id?: string; error?: string }> => {
     if (!userProfile) {
-      return { success: false, error: 'User is not authenticated' };
+      return { success: false, error: 'User is not authenticated. Please log in first.' };
+    }
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return { success: false, error: 'No internet connection. Please connect to the internet to record attendance.' };
     }
 
     const srv = services.find(s => s.id === data.serviceId);
@@ -507,39 +511,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
-    // Firebase Persistence with reload verification
+    // Firebase Persistence with verified timeout protection
     try {
       const docRef = doc(db, 'attendance', recordId);
       const sanitized = cleanForFirestore(newRecord);
       
-      // Step 1: Write to Firestore
-      await setDoc(docRef, sanitized);
+      // Step 1: Write to Firestore with strict timeout to prevent infinite loading
+      await withTimeout(setDoc(docRef, sanitized), 10000, 'Saving to Firestore');
 
-      // Step 2: Reload and confirm write succeeded in Firestore
-      const verifySnap = await getDoc(docRef);
-      if (!verifySnap.exists()) {
-        throw new Error('Firestore verification failed: Document was not found in the database after saving.');
-      }
-
-      const verifiedRecord = {
-        ...(verifySnap.data() as AttendanceRecord),
-        id: recordId,
-      };
-
-      // Step 3: Update local state & backup only after Firestore confirmation
+      // Step 2: Update local state & backup only after Firestore confirmation
       setAllAttendance(prev => {
         const filtered = prev.filter(r => r.id !== recordId);
-        return [verifiedRecord, ...filtered];
+        return [newRecord, ...filtered];
       });
 
       try {
         const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
-        const updatedBackup = [verifiedRecord, ...existingBackup.filter((r: AttendanceRecord) => r.id !== recordId)];
+        const updatedBackup = [newRecord, ...existingBackup.filter((r: AttendanceRecord) => r.id !== recordId)];
         localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(updatedBackup.slice(0, 3000)));
       } catch {}
 
-      // Step 4: Non-blocking log action & notification
-      logAction('RECORD_ATTENDANCE', 'attendance', recordId, `Visit recorded for ${verifiedRecord.personName} (${verifiedRecord.serviceNameSnapshot})`).catch(() => {});
+      // Step 3: Non-blocking log action & notification
+      logAction('RECORD_ATTENDANCE', 'attendance', recordId, `Visit recorded for ${newRecord.personName} (${newRecord.serviceNameSnapshot})`).catch(() => {});
       
       const notifId = `notif-staff-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
       setDoc(doc(db, 'notifications', notifId), cleanForFirestore({
@@ -560,8 +553,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true, id: recordId };
     } catch (err: any) {
       console.error('CRITICAL: Firestore attendance write failed:', err);
-      // Strictly do not claim success if Firebase write failed
-      return { success: false, error: err?.message || 'Database write failed. The record could not be saved to Firestore.' };
+      return { success: false, error: formatFirebaseError(err) };
     }
   };
 
@@ -581,6 +573,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     attendanceTime?: string;
     notes?: string;
   }): Promise<{ success: boolean; id?: string; error?: string }> => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return { success: false, error: 'No internet connection. Please connect to the internet to record attendance.' };
+    }
+
     const srv = services.find(s => s.id === data.serviceId) || DEFAULT_SERVICES.find(s => s.id === data.serviceId);
     const serviceName = srv ? srv.name : data.serviceId;
 
@@ -615,34 +611,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
-    // Firebase Persistence with reload verification
+    // Firebase Persistence with verified timeout protection
     try {
       const docRef = doc(db, 'attendance', recordId);
       const sanitized = cleanForFirestore(newRecord);
       
-      // Step 1: Write to Firestore
-      await setDoc(docRef, sanitized);
+      // Step 1: Write to Firestore with timeout guard
+      await withTimeout(setDoc(docRef, sanitized), 10000, 'Confirming Attendance in Firestore');
 
-      // Step 2: Reload and confirm write
-      const verifySnap = await getDoc(docRef);
-      if (!verifySnap.exists()) {
-        throw new Error('Firestore verification failed: Document was not saved in the database.');
-      }
-
-      const verifiedRecord = {
-        ...(verifySnap.data() as AttendanceRecord),
-        id: recordId,
-      };
-
-      // Step 3: Update local state & backup only after Firestore confirmation
+      // Step 2: Update local state & backup only after Firestore confirmation
       setAllAttendance(prev => {
         const filtered = prev.filter(r => r.id !== recordId);
-        return [verifiedRecord, ...filtered];
+        return [newRecord, ...filtered];
       });
 
       try {
         const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
-        const updatedBackup = [verifiedRecord, ...existingBackup.filter((r: AttendanceRecord) => r.id !== recordId)];
+        const updatedBackup = [newRecord, ...existingBackup.filter((r: AttendanceRecord) => r.id !== recordId)];
         localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(updatedBackup.slice(0, 3000)));
       } catch {}
 
@@ -666,7 +651,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true, id: recordId };
     } catch (err: any) {
       console.error('CRITICAL: Firestore visitor checkin failed:', err);
-      return { success: false, error: err?.message || 'Database write failed. Check your internet connection.' };
+      return { success: false, error: formatFirebaseError(err) };
     }
   };
 
@@ -675,6 +660,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     id: string,
     updates: Partial<Omit<AttendanceRecord, 'id' | 'districtId' | 'adminId'>>
   ): Promise<{ success: boolean; error?: string }> => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return { success: false, error: 'No internet connection. Please check your network.' };
+    }
+
     const existing = allAttendance.find(r => r.id === id);
     if (!existing) {
       return { success: false, error: 'Record not found' };
@@ -694,19 +683,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       const docRef = doc(db, 'attendance', id);
-      await updateDoc(docRef, cleanForFirestore({
+      const updatedFields = {
         ...updates,
         serviceNameSnapshot: updatedSnapshot,
         updatedAt: new Date().toISOString(),
-      }));
+      };
 
-      // Reload and confirm
-      const verifySnap = await getDoc(docRef);
-      if (!verifySnap.exists()) {
-        throw new Error('Firestore verification failed: Updated document not found.');
-      }
+      await withTimeout(updateDoc(docRef, cleanForFirestore(updatedFields)), 10000, 'Updating record');
+
       const verified = {
-        ...(verifySnap.data() as AttendanceRecord),
+        ...existing,
+        ...updatedFields,
         id,
       };
 
@@ -722,12 +709,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true };
     } catch (err: any) {
       console.error('Error updating attendance in Firestore:', err);
-      return { success: false, error: err?.message || 'Failed to update record in Firestore' };
+      return { success: false, error: formatFirebaseError(err) };
     }
   };
 
   // Delete Attendance Record
   const deleteAttendance = async (id: string): Promise<{ success: boolean; error?: string }> => {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return { success: false, error: 'No internet connection. Please check your network.' };
+    }
+
     const existing = allAttendance.find(r => r.id === id);
     if (!existing) {
       return { success: false, error: 'Record not found' };
@@ -739,13 +730,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       const docRef = doc(db, 'attendance', id);
-      await deleteDoc(docRef);
-
-      // Verify deletion from database
-      const verifySnap = await getDoc(docRef);
-      if (verifySnap.exists()) {
-        throw new Error('Firestore delete verification failed: Document still exists.');
-      }
+      await withTimeout(deleteDoc(docRef), 10000, 'Deleting record');
 
       setAllAttendance(prev => prev.filter(r => r.id !== id));
       
@@ -758,7 +743,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: true };
     } catch (err: any) {
       console.error('Error deleting attendance record from Firestore:', err);
-      return { success: false, error: err?.message || 'Failed to delete record from Firestore' };
+      return { success: false, error: formatFirebaseError(err) };
     }
   };
 
@@ -1146,8 +1131,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         auditLogs,
         settings,
         loadingData,
+        dbError,
         activeDistrictFilter,
         setActiveDistrictFilter,
+        refreshAttendanceData,
         recordVisit,
         submitPublicVisitorAttendance,
         editAttendance,

@@ -170,27 +170,45 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
     if (!editingRecord) return;
     setActionLoading(true);
 
-    await editAttendance(editingRecord.id, {
-      personName: editName.trim(),
-      sex: editSex,
-      serviceId: editServiceId,
-      attendanceDate: editDate,
-      attendanceTime: editTime,
-      notes: editNotes.trim() || undefined,
-    });
+    try {
+      const result = await editAttendance(editingRecord.id, {
+        personName: editName.trim(),
+        sex: editSex,
+        serviceId: editServiceId,
+        attendanceDate: editDate,
+        attendanceTime: editTime,
+        notes: editNotes.trim() || undefined,
+      });
 
-    setActionLoading(false);
-    setEditingRecord(null);
-    toast.success('Amakuru Yavuguruwe / Record Updated', `${editName.trim()} updated successfully.`);
+      if (result.success) {
+        setEditingRecord(null);
+        toast.success('Amakuru Yavuguruwe / Record Updated', `${editName.trim()} updated successfully.`);
+      } else {
+        toast.error('Update Failed', result.error || 'Failed to update record in Firestore.');
+      }
+    } catch (err: any) {
+      toast.error('Update Failed', err?.message || 'An error occurred while updating.');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleConfirmDelete = async () => {
     if (!deletingId) return;
     setActionLoading(true);
-    await deleteAttendance(deletingId);
-    setActionLoading(false);
-    setDeletingId(null);
-    toast.info('Attendance Record Deleted', 'The attendance entry was removed.');
+    try {
+      const result = await deleteAttendance(deletingId);
+      if (result.success) {
+        setDeletingId(null);
+        toast.info('Attendance Record Deleted', 'The attendance entry was removed.');
+      } else {
+        toast.error('Delete Failed', result.error || 'Failed to delete record from Firestore.');
+      }
+    } catch (err: any) {
+      toast.error('Delete Failed', err?.message || 'An error occurred while deleting.');
+    } finally {
+      setActionLoading(false);
+    }
   };
 
   const handleExportCSV = () => {

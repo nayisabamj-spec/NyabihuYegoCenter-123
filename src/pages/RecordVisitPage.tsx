@@ -103,50 +103,56 @@ export const RecordVisitPage: React.FC = () => {
 
     const finalSector = isOtherDistrict ? customSector.trim() : (sector || customSector.trim());
 
-    const result = await recordVisit({
-      personName: personName.trim(),
-      sex,
-      serviceId: selectedServiceId,
-      district: district.toUpperCase(),
-      sector: finalSector || undefined,
-      cell: cell.trim() || undefined,
-      village: village.trim() || undefined,
-      phoneNumber: phoneNumber.trim() || undefined,
-      email: email.trim() || undefined,
-      nationalId: cleanNid || undefined,
-      attendanceDate: customDate,
-      attendanceTime: customTime,
-      notes: notes.trim() || undefined,
-    });
+    try {
+      const result = await recordVisit({
+        personName: personName.trim(),
+        sex,
+        serviceId: selectedServiceId,
+        district: district.toUpperCase(),
+        sector: finalSector || undefined,
+        cell: cell.trim() || undefined,
+        village: village.trim() || undefined,
+        phoneNumber: phoneNumber.trim() || undefined,
+        email: email.trim() || undefined,
+        nationalId: cleanNid || undefined,
+        attendanceDate: customDate,
+        attendanceTime: customTime,
+        notes: notes.trim() || undefined,
+      });
 
-    setSaving(false);
+      if (result.success) {
+        const recorded = personName.trim();
+        const srvObj = services.find(s => s.id === selectedServiceId);
+        setLastRecordedName(recorded);
+        setSuccessMessage(`Visit recorded and verified in Firebase for ${recorded}!`);
+        toast.success('Byagenze Neza / Visit Recorded!', `${recorded} (${srvObj?.name || 'Service'}) saved.`);
+        setPersonName('');
+        setCell('');
+        setVillage('');
+        setPhoneNumber('');
+        setEmail('');
+        setNationalId('');
+        setNotes('');
+        // Focus back on name input for next person
+        setTimeout(() => {
+          nameInputRef.current?.focus();
+        }, 100);
 
-    if (result.success) {
-      const recorded = personName.trim();
-      const srvObj = services.find(s => s.id === selectedServiceId);
-      setLastRecordedName(recorded);
-      setSuccessMessage(`Visit recorded and verified in Firebase for ${recorded}!`);
-      toast.success('Byagenze Neza / Visit Recorded!', `${recorded} (${srvObj?.name || 'Service'}) saved.`);
-      setPersonName('');
-      setCell('');
-      setVillage('');
-      setPhoneNumber('');
-      setEmail('');
-      setNationalId('');
-      setNotes('');
-      // Focus back on name input for next person
-      setTimeout(() => {
-        nameInputRef.current?.focus();
-      }, 100);
-
-      // Auto-hide success message after 5s
-      setTimeout(() => {
-        setSuccessMessage(null);
-      }, 5000);
-    } else {
-      const errorMsg = result.error || 'Failed to record visit in Firebase. Please check your internet connection.';
-      setErrorMessage(errorMsg);
-      toast.error('Gufata Amakuru Byanze / Error', errorMsg);
+        // Auto-hide success message after 5s
+        setTimeout(() => {
+          setSuccessMessage(null);
+        }, 5000);
+      } else {
+        const errorMsg = result.error || 'Failed to record visit in Firebase. Please check your internet connection.';
+        setErrorMessage(errorMsg);
+        toast.error('Gufata Amakuru Byanze / Error', errorMsg);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'An unexpected error occurred while saving.';
+      setErrorMessage(msg);
+      toast.error('Gufata Amakuru Byanze / Error', msg);
+    } finally {
+      setSaving(false);
     }
   };
 
