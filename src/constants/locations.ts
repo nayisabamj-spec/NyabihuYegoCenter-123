@@ -82,3 +82,25 @@ export const ALL_RWANDA_DISTRICTS = [
   'Nyagatare',
   'Rwamagana',
 ];
+
+/**
+ * Normalizes any district identifier variation into a single canonical ID.
+ * Nyabihu is the active production center for all operations.
+ */
+export const normalizeDistrictId = (id?: string | null): string => {
+  if (!id) return ACTIVE_PRODUCTION_DISTRICT_ID;
+  const clean = id.toLowerCase().trim();
+  if (
+    clean === 'nyabihu' ||
+    clean === 'dist-nyabihu' ||
+    clean === 'nya-01' ||
+    clean.includes('nyabihu')
+  ) {
+    return ACTIVE_PRODUCTION_DISTRICT_ID;
+  }
+  return clean;
+};
+
+export const isNyabihuDistrict = (id?: string | null): boolean => {
+  return normalizeDistrictId(id) === ACTIVE_PRODUCTION_DISTRICT_ID;
+};

@@ -5,6 +5,7 @@ import {
   signInWithPopup,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
+  signInAnonymously,
   signOut,
   updateProfile as updateFirebaseProfile,
   updatePassword as updateFirebasePassword,
@@ -23,6 +24,7 @@ import {
 import { auth, db, googleProvider, DEFAULT_DIRECTOR_EMAIL, SUPER_ADMIN_EMAILS, isSuperAdminEmail } from '../firebase/config';
 import { UserProfile, UserStatus } from '../types';
 import { DEFAULT_DISTRICTS } from '../data/initialData';
+import { normalizeDistrictId, ACTIVE_PRODUCTION_DISTRICT_ID, ACTIVE_PRODUCTION_DISTRICT_NAME } from '../constants/locations';
 import { cleanForFirestore } from '../utils/firestoreSanitizer';
 
 const PASSWORDS_STORAGE_KEY = 'nyabihu_admin_passwords';
@@ -219,9 +221,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
 
-        const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || 'nyabihu')) || DEFAULT_DISTRICTS[0];
-        const assignedDistrictId = matchedPreProfile?.districtId || (isSuperAdmin ? 'nyabihu' : (defaultDistrictId || districtObj.id));
-        const assignedDistrictName = matchedPreProfile?.districtName || (isSuperAdmin ? 'Nyabihu District' : (defaultDistrictName || districtObj.name));
+        const districtObj = DEFAULT_DISTRICTS.find(d => d.id === (defaultDistrictId || ACTIVE_PRODUCTION_DISTRICT_ID)) || DEFAULT_DISTRICTS[0];
+        const assignedDistrictId = normalizeDistrictId(matchedPreProfile?.districtId || (isSuperAdmin ? ACTIVE_PRODUCTION_DISTRICT_ID : (defaultDistrictId || districtObj.id)));
+        const assignedDistrictName = matchedPreProfile?.districtName || (isSuperAdmin ? ACTIVE_PRODUCTION_DISTRICT_NAME : (defaultDistrictName || districtObj.name));
 
         // Resolve role and approval status
         const resolvedRole: 'director' | 'admin' = (isSuperAdmin || matchedPreProfile?.role === 'director') ? 'director' : (matchedPreProfile?.role || 'admin');
@@ -398,12 +400,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             console.warn('Auto-create in Firebase Auth warning:', createErr);
           }
 
-          // Fallback direct authenticated session for Super Admins / verified credentials
-          const syntheticUid = `superadmin-${cleanEmail.replace(/[^a-z0-9]/g, '_')}`;
+          // Ensure authenticated Firebase Auth session so rules and listeners succeed
+          let authUser = auth.currentUser;
+          if (!authUser) {
+            try {
+              const anonRes = await signInAnonymously(auth);
+              authUser = anonRes.user;
+            } catch (anonErr) {
+              console.warn('Anonymous fallback auth note:', anonErr);
+            }
+          }
+
+          const syntheticUid = authUser?.uid || `superadmin-${cleanEmail.replace(/[^a-z0-9]/g, '_')}`;
+          if (authUser) {
+            setCurrentUser(authUser);
+          }
           await fetchUserProfile({
             uid: syntheticUid,
             email: cleanEmail,
-            displayName: cleanEmail === 'myvesrobert@gmail.com' ? 'M. Yves Robert' : 'Super Administrator',
+            displayName: cleanEmail === 'myvesrobert@gmail.com' ? 'M. Yves Robert' : 
+                         cleanEmail === 'nyirabakundamarie@gmail.com' ? 'Nyirabakunda Marie' : 'Super Administrator',
             photoURL: null,
           });
           return;

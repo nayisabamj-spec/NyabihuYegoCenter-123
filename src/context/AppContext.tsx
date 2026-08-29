@@ -26,9 +26,12 @@ import {
   Sex,
 } from '../types';
 import { DEFAULT_DISTRICTS, DEFAULT_SERVICES, DEFAULT_SETTINGS } from '../data/initialData';
+import { normalizeDistrictId, ACTIVE_PRODUCTION_DISTRICT_ID, ACTIVE_PRODUCTION_DISTRICT_NAME } from '../constants/locations';
 import { formatDateYYYYMMDD } from '../utils/stats';
 import { cleanForFirestore } from '../utils/firestoreSanitizer';
 import { formatFirebaseError, withTimeout } from '../utils/firebaseErrorHelper';
+
+export type SyncStatus = 'connected' | 'reconnecting' | 'offline';
 
 interface AppContextType {
   districts: District[];
@@ -39,6 +42,7 @@ interface AppContextType {
   settings: SystemSettings;
   loadingData: boolean;
   dbError: string | null;
+  syncStatus: SyncStatus;
   activeDistrictFilter: string; // 'all' or specific districtId (for Director)
   setActiveDistrictFilter: (dId: string) => void;
   refreshAttendanceData: () => Promise<void>;
@@ -149,9 +153,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SETTINGS);
   const [loadingData, setLoadingData] = useState<boolean>(false);
   const [dbError, setDbError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() => typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'connected');
 
   // Director district filter: 'all' or specific districtId
   const [activeDistrictFilter, setActiveDistrictFilter] = useState<string>('all');
+
+  // Monitor browser network connectivity
+  useEffect(() => {
+    const handleOnline = () => setSyncStatus('connected');
+    const handleOffline = () => setSyncStatus('offline');
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Load or sync Districts, Services, Settings & Users in real-time
   useEffect(() => {
@@ -297,7 +314,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Listen to Attendance & Audit Logs in real-time from Firestore
   useEffect(() => {
-    // If not signed in yet or not approved, do not wipe cache if we are still authenticating
+    // If not signed in yet, retain local cache or wait for authentication
     if (!userProfile) {
       return;
     }
@@ -312,70 +329,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDbError(null);
     let unsubAttendance = () => {};
     let unsubLogs = () => {};
+    let isCancelled = false;
 
-    try {
-      // Listen directly to the attendance collection
-      const attendanceRef = collection(db, 'attendance');
+    const setupListeners = () => {
+      try {
+        // Listen directly to the attendance collection
+        const attendanceRef = collection(db, 'attendance');
 
-      unsubAttendance = onSnapshot(
-        attendanceRef,
-        (snapshot) => {
-          const records: AttendanceRecord[] = [];
-          snapshot.forEach((d) => {
-            const data = d.data() as AttendanceRecord;
-            records.push({
-              ...data,
-              id: d.id || data.id,
-              districtId: (data.districtId || 'nyabihu').toLowerCase(),
+        unsubAttendance = onSnapshot(
+          attendanceRef,
+          (snapshot) => {
+            if (isCancelled) return;
+            const records: AttendanceRecord[] = [];
+            snapshot.forEach((d) => {
+              const data = d.data() as AttendanceRecord;
+              records.push({
+                ...data,
+                id: d.id || data.id,
+                districtId: normalizeDistrictId(data.districtId),
+              });
             });
-          });
-          // Sort by date & time desc in memory
-          records.sort((a, b) => {
-            const dtA = `${a.attendanceDate || ''} ${a.attendanceTime || ''}`;
-            const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
-            return dtB.localeCompare(dtA);
-          });
-          setAllAttendance(records);
-          try {
-            localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
-          } catch {}
-          setLoadingData(false);
-          setDbError(null);
-        },
-        (error) => {
-          console.warn('Firestore attendance snapshot error, fallback to local store:', error);
-          setDbError(error?.message || 'Database connection issue. Showing local cached records.');
-          const localSaved = localStorage.getItem('nyabihu_attendance_backup');
-          if (localSaved) {
+            // Sort by date & time desc in memory
+            records.sort((a, b) => {
+              const dtA = `${a.attendanceDate || ''} ${a.attendanceTime || ''}`;
+              const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
+              return dtB.localeCompare(dtA);
+            });
+            setAllAttendance(records);
             try {
-              const parsed = JSON.parse(localSaved) as AttendanceRecord[];
-              setAllAttendance(parsed);
+              localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
             } catch {}
+            setLoadingData(false);
+            setDbError(null);
+            setSyncStatus('connected');
+          },
+          (error) => {
+            if (isCancelled) return;
+            console.warn('Firestore attendance snapshot note, using cached store:', error?.message);
+            // Don't display blocking error if local backup is present
+            const localSaved = localStorage.getItem('nyabihu_attendance_backup');
+            if (localSaved) {
+              try {
+                const parsed = JSON.parse(localSaved) as AttendanceRecord[];
+                setAllAttendance(parsed);
+              } catch {}
+            }
+            setLoadingData(false);
           }
-          setLoadingData(false);
-        }
-      );
+        );
 
-      // Audit logs listener
-      const logsRef = collection(db, 'auditLogs');
-      unsubLogs = onSnapshot(logsRef, (snapshot) => {
-        const logs: AuditLog[] = [];
-        snapshot.forEach(d => {
-          const lData = d.data() as AuditLog;
-          logs.push({ ...lData, id: d.id || lData.id });
+        // Audit logs listener
+        const logsRef = collection(db, 'auditLogs');
+        unsubLogs = onSnapshot(logsRef, (snapshot) => {
+          if (isCancelled) return;
+          const logs: AuditLog[] = [];
+          snapshot.forEach(d => {
+            const lData = d.data() as AuditLog;
+            logs.push({ ...lData, id: d.id || lData.id });
+          });
+          logs.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
+          setAuditLogs(logs.slice(0, 150));
+        }, (err) => {
+          console.warn('Audit logs listener note:', err?.message);
         });
-        logs.sort((a, b) => (b.timestamp || '').localeCompare(a.timestamp || ''));
-        setAuditLogs(logs.slice(0, 150));
-      }, (err) => {
-        console.warn('Audit logs listener info:', err);
-      });
-    } catch (e: any) {
-      console.warn('Error setting up firestore listeners:', e);
-      setDbError(e?.message || 'Error initializing Firestore listener.');
-      setLoadingData(false);
-    }
+      } catch (e: any) {
+        if (isCancelled) return;
+        console.warn('Error setting up firestore listeners:', e);
+        setLoadingData(false);
+      }
+    };
+
+    setupListeners();
 
     return () => {
+      isCancelled = true;
       unsubAttendance();
       unsubLogs();
     };
@@ -393,7 +420,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         records.push({
           ...data,
           id: d.id || data.id,
-          districtId: (data.districtId || 'nyabihu').toLowerCase(),
+          districtId: normalizeDistrictId(data.districtId),
         });
       });
       records.sort((a, b) => {
@@ -406,6 +433,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
       } catch {}
       setLoadingData(false);
+      setSyncStatus('connected');
     } catch (err: any) {
       console.error('Error in refreshAttendanceData:', err);
       setDbError(err?.message || 'Failed to reload attendance from Firebase.');
@@ -419,14 +447,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     
     // Strict isolation: if not director, ONLY ever return their own district
     if (!isDirector) {
-      const userDistClean = (userProfile.districtId || 'nyabihu').toLowerCase();
-      return allAttendance.filter(r => (r.districtId || 'nyabihu').toLowerCase() === userDistClean);
+      const userDistClean = normalizeDistrictId(userProfile.districtId);
+      return allAttendance.filter(r => normalizeDistrictId(r.districtId) === userDistClean);
     }
 
     // If director: apply active district filter if selected
     if (activeDistrictFilter !== 'all') {
-      const filterClean = activeDistrictFilter.toLowerCase();
-      return allAttendance.filter(r => (r.districtId || 'nyabihu').toLowerCase() === filterClean);
+      const filterClean = normalizeDistrictId(activeDistrictFilter);
+      return allAttendance.filter(r => normalizeDistrictId(r.districtId) === filterClean);
     }
 
     return allAttendance;
@@ -1162,6 +1190,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         settings,
         loadingData,
         dbError,
+        syncStatus,
         activeDistrictFilter,
         setActiveDistrictFilter,
         refreshAttendanceData,

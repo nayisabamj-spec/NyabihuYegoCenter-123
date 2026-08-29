@@ -39,7 +39,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
   onRouteChange,
 }) => {
   const { userProfile, signOutUser, isDirector } = useAuth();
-  const { districts, activeDistrictFilter, setActiveDistrictFilter, seedRealisticData, attendanceRecords } = useApp();
+  const { districts, activeDistrictFilter, setActiveDistrictFilter, seedRealisticData, attendanceRecords, syncStatus } = useApp();
   const { unreadCount, isOnline, updateAvailable, reloadAppForUpdate } = useNotification();
   const { isInstalled, promptToInstall, isInstallable } = usePWA();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -259,14 +259,22 @@ export const AppLayout: React.FC<AppLayoutProps> = ({
 
           {/* Header Actions */}
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-            {/* Online/Offline Status Indicator */}
-            {!isOnline ? (
+            {/* Live Real-Time Sync Indicator */}
+            {syncStatus === 'connected' && isOnline ? (
+              <div
+                className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-800 text-[10px] font-bold border border-emerald-200"
+                title="Real-time Firestore synchronization active"
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                <span>Live Sync</span>
+              </div>
+            ) : !isOnline || syncStatus === 'offline' ? (
               <div
                 className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-amber-100 text-amber-900 text-[10px] sm:text-xs font-bold border border-amber-300 shrink-0"
-                title="Offline mode active - visits will be synced when back online"
+                title="Offline mode active - visits cached locally and will sync when reconnected"
               >
                 <WifiOff className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-amber-700 shrink-0" />
-                <span className="hidden xs:inline">Offline</span>
+                <span className="hidden xs:inline">Offline Cache</span>
               </div>
             ) : null}
 

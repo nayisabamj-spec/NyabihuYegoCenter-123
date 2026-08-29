@@ -3,7 +3,7 @@ import { getAnalytics, isSupported } from 'firebase/analytics';
 import { getAuth, GoogleAuthProvider, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
 
-// Hardcoded Firebase configuration for nyabihu-yego-center
+// Authoritative Firebase configuration for nyabihu-yego-center
 export const firebaseConfig = {
   apiKey: "AIzaSyBDOQSY7_Mm8vKRDTNoBKwnVxQTxg17H5k",
   authDomain: "nyabihu-yego-center.firebaseapp.com",
@@ -15,7 +15,7 @@ export const firebaseConfig = {
   firestoreDatabaseId: "(default)"
 };
 
-// Initialize Firebase
+// Initialize Firebase with the authoritative nyabihu-yego-center configuration
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 
 // Initialize Analytics (supported in browser environments)
@@ -43,8 +43,8 @@ googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
 
-// Initialize Firestore
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
+// Initialize Firestore for (default) database
+export const db = getFirestore(app, '(default)');
 
 export const DEFAULT_DIRECTOR_EMAIL = 'nyirabakundamarie@gmail.com';
 
@@ -58,5 +58,7 @@ export const isSuperAdminEmail = (email?: string | null): boolean => {
   const clean = email.toLowerCase().trim();
   return SUPER_ADMIN_EMAILS.some(e => e.toLowerCase().trim() === clean);
 };
+
+
 
 
