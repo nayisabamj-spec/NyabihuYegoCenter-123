@@ -355,6 +355,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
               return dtB.localeCompare(dtA);
             });
+            console.info(`[Firestore Live Check] Active attendance documents in nyabihu-yego-center: ${records.length}`);
             setAllAttendance(records);
             try {
               localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
@@ -365,15 +366,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           },
           (error) => {
             if (isCancelled) return;
-            console.warn('Firestore attendance snapshot note, using cached store:', error?.message);
-            // Don't display blocking error if local backup is present
-            const localSaved = localStorage.getItem('nyabihu_attendance_backup');
-            if (localSaved) {
-              try {
-                const parsed = JSON.parse(localSaved) as AttendanceRecord[];
-                setAllAttendance(parsed);
-              } catch {}
-            }
+            console.error('[Firestore Attendance Error]', error?.message);
+            setDbError(error?.message || 'Error connecting to Firestore attendance collection.');
             setLoadingData(false);
           }
         );
@@ -539,30 +533,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
-    // Firebase Persistence with verified timeout protection & resilient sync
+    // Firebase Persistence
     try {
       const docRef = doc(db, 'attendance', recordId);
       const sanitized = cleanForFirestore(newRecord);
       
-      // Step 1: Write to Firestore with robust 20s timeout and server fallback
-      try {
-        await withTimeout(setDoc(docRef, sanitized), 20000, 'Saving to Firestore');
-      } catch (directWriteErr: any) {
-        console.warn('Direct Firestore write took longer than expected, synchronizing via server API...', directWriteErr);
-        const resp = await fetch('/api/attendance/checkin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...sanitized,
-            idempotencyKey: recordId,
-          }),
-        });
-        if (!resp.ok) {
-          throw directWriteErr;
-        }
-      }
+      // Step 1: Direct write to Firestore with 15s timeout protection
+      await withTimeout(setDoc(docRef, sanitized), 15000, 'Saving to Firestore');
 
-      // Step 2: Update local state & backup only after Firestore confirmation
+      // Step 2: Update local state & backup ONLY after Firestore confirmation
       setAllAttendance(prev => {
         const filtered = prev.filter(r => r.id !== recordId);
         return [newRecord, ...filtered];
@@ -654,30 +633,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
-    // Firebase Persistence with verified timeout protection & resilient fallback
+    // Firebase Persistence
     try {
       const docRef = doc(db, 'attendance', recordId);
       const sanitized = cleanForFirestore(newRecord);
       
-      // Step 1: Write to Firestore with 20s timeout guard and server fallback
-      try {
-        await withTimeout(setDoc(docRef, sanitized), 20000, 'Confirming Attendance in Firestore');
-      } catch (directWriteErr: any) {
-        console.warn('Direct visitor write took longer than expected, synchronizing via server API...', directWriteErr);
-        const resp = await fetch('/api/attendance/checkin', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ...sanitized,
-            idempotencyKey: recordId,
-          }),
-        });
-        if (!resp.ok) {
-          throw directWriteErr;
-        }
-      }
+      // Step 1: Direct write to Firestore with 15s timeout guard
+      await withTimeout(setDoc(docRef, sanitized), 15000, 'Confirming Attendance in Firestore');
 
-      // Step 2: Update local state & backup only after Firestore confirmation
+      // Step 2: Update local state & backup ONLY after Firestore confirmation
       setAllAttendance(prev => {
         const filtered = prev.filter(r => r.id !== recordId);
         return [newRecord, ...filtered];
