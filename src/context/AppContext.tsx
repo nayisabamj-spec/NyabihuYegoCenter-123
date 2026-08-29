@@ -511,13 +511,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
-    // Firebase Persistence with verified timeout protection
+    // Firebase Persistence with verified timeout protection & resilient sync
     try {
       const docRef = doc(db, 'attendance', recordId);
       const sanitized = cleanForFirestore(newRecord);
       
-      // Step 1: Write to Firestore with strict timeout to prevent infinite loading
-      await withTimeout(setDoc(docRef, sanitized), 10000, 'Saving to Firestore');
+      // Step 1: Write to Firestore with robust 20s timeout and server fallback
+      try {
+        await withTimeout(setDoc(docRef, sanitized), 20000, 'Saving to Firestore');
+      } catch (directWriteErr: any) {
+        console.warn('Direct Firestore write took longer than expected, synchronizing via server API...', directWriteErr);
+        const resp = await fetch('/api/attendance/checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...sanitized,
+            idempotencyKey: recordId,
+          }),
+        });
+        if (!resp.ok) {
+          throw directWriteErr;
+        }
+      }
 
       // Step 2: Update local state & backup only after Firestore confirmation
       setAllAttendance(prev => {
@@ -611,13 +626,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updatedAt: new Date().toISOString(),
     };
 
-    // Firebase Persistence with verified timeout protection
+    // Firebase Persistence with verified timeout protection & resilient fallback
     try {
       const docRef = doc(db, 'attendance', recordId);
       const sanitized = cleanForFirestore(newRecord);
       
-      // Step 1: Write to Firestore with timeout guard
-      await withTimeout(setDoc(docRef, sanitized), 10000, 'Confirming Attendance in Firestore');
+      // Step 1: Write to Firestore with 20s timeout guard and server fallback
+      try {
+        await withTimeout(setDoc(docRef, sanitized), 20000, 'Confirming Attendance in Firestore');
+      } catch (directWriteErr: any) {
+        console.warn('Direct visitor write took longer than expected, synchronizing via server API...', directWriteErr);
+        const resp = await fetch('/api/attendance/checkin', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...sanitized,
+            idempotencyKey: recordId,
+          }),
+        });
+        if (!resp.ok) {
+          throw directWriteErr;
+        }
+      }
 
       // Step 2: Update local state & backup only after Firestore confirmation
       setAllAttendance(prev => {
@@ -689,7 +719,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updatedAt: new Date().toISOString(),
       };
 
-      await withTimeout(updateDoc(docRef, cleanForFirestore(updatedFields)), 10000, 'Updating record');
+      await withTimeout(updateDoc(docRef, cleanForFirestore(updatedFields)), 20000, 'Updating record');
 
       const verified = {
         ...existing,
@@ -730,7 +760,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     try {
       const docRef = doc(db, 'attendance', id);
-      await withTimeout(deleteDoc(docRef), 10000, 'Deleting record');
+      await withTimeout(deleteDoc(docRef), 20000, 'Deleting record');
 
       setAllAttendance(prev => prev.filter(r => r.id !== id));
       

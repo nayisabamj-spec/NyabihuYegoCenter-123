@@ -2,45 +2,82 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // Users collection (Admins, Super Admins, Staff)
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isSuperDirector() {
+      return isAuthenticated() && (
+        request.auth.token.email == 'nyirabakundamarie@gmail.com' ||
+        request.auth.token.email == 'myvesrobert@gmail.com'
+      );
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function isValidAttendanceSubmission() {
+      let data = request.resource.data;
+      return data.personName is string &&
+             data.personName.size() >= 2 &&
+             data.sex in ['Male', 'Female', 'MALE', 'FEMALE'] &&
+             data.serviceId is string;
+    }
+
+    // 1. Users collection: Staff and Directors
     match /users/{userId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated();
+      // Allow user to initialize/update own profile or super director to manage
+      allow create, update: if isAuthenticated() && (isOwner(userId) || isSuperDirector());
+      allow delete: if isSuperDirector();
     }
     
-    // Districts collection
-    match /districts/{districtId} {
-      allow read, write: if true;
-    }
-    
-    // Services collection
-    match /services/{serviceId} {
-      allow read, write: if true;
-    }
-    
-    // Attendance records collection
+    // 2. Attendance records collection: Public check-in & Staff operations
     match /attendance/{attendanceId} {
-      allow read, write: if true;
+      // Public visitors can submit attendance with validated fields; authenticated staff can also create
+      allow create: if isValidAttendanceSubmission() || isAuthenticated();
+      // Only authenticated staff & director can read, edit or delete attendance
+      allow read: if isAuthenticated();
+      allow update, delete: if isAuthenticated();
     }
-    
-    // Audit logs collection
-    match /auditLogs/{logId} {
-      allow read, write: if true;
+
+    // 3. Services: Public can read, authenticated staff/director can edit
+    match /services/{serviceId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
     }
-    
-    // Settings collection
+
+    // 4. Districts: Public can read, authenticated director can manage
+    match /districts/{districtId} {
+      allow read: if true;
+      allow write: if isAuthenticated();
+    }
+
+    // 5. System Settings: Public can read center branding, authenticated staff can update
     match /settings/{settingId} {
-      allow read, write: if true;
+      allow read: if true;
+      allow write: if isAuthenticated();
     }
-    
-    // Notifications collection
+
+    // 6. Notifications: Staff can read and manage; system/visitors can trigger
     match /notifications/{notificationId} {
-      allow read, write: if true;
+      allow read: if isAuthenticated();
+      allow create: if true;
+      allow update, delete: if isAuthenticated();
     }
-    
-    // Push Subscriptions collection
+
+    // 7. Audit Logs: Immutable log records
+    match /auditLogs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if true;
+      allow update, delete: if false;
+    }
+
+    // 8. Push Subscriptions
     match /pushSubscriptions/{subId} {
       allow read, write: if true;
     }
   }
 }
-

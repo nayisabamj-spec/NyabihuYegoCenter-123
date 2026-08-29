@@ -1,4 +1,9 @@
-export const DEFAULT_DISTRICT = 'NYABIHU';
+// Centralized District and Location Configuration for NYABIHU YEGO CENTER
+export const ACTIVE_PRODUCTION_DISTRICT_ID = 'nyabihu';
+export const ACTIVE_PRODUCTION_DISTRICT_CODE = 'NYABIHU';
+export const ACTIVE_PRODUCTION_DISTRICT_NAME = 'Nyabihu District';
+export const ACTIVE_PRODUCTION_CENTER_NAME = 'NYABIHU YEGO CENTER';
+export const DEFAULT_DISTRICT = ACTIVE_PRODUCTION_DISTRICT_CODE;
 
 export const NYABIHU_SECTORS = [
   'Bigogwe',
@@ -15,6 +20,8 @@ export const NYABIHU_SECTORS = [
   'Muringa',
 ] as const;
 
+export type NyabihuSector = typeof NYABIHU_SECTORS[number];
+
 export interface DistrictGroup {
   province: string;
   districts: string[];
@@ -23,7 +30,7 @@ export interface DistrictGroup {
 export const RWANDA_DISTRICT_GROUPS: DistrictGroup[] = [
   {
     province: 'Western Province (Intara y\'Iburengerazuba)',
-    districts: ['Nyabihu (Main Center)', 'Rubavu', 'Ngororero', 'Rutsiro', 'Karongi', 'Nyamasheke', 'Rusizi'],
+    districts: ['Nyabihu (Active Center)', 'Rubavu', 'Ngororero', 'Rutsiro', 'Karongi', 'Nyamasheke', 'Rusizi'],
   },
   {
     province: 'Northern Province (Intara y\'Amajyaruguru)',

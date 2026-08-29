@@ -351,87 +351,51 @@ export const VisitorCheckInModal: React.FC<VisitorCheckInModalProps> = ({
                   </div>
                   <div>
                     <span className="text-[11px] font-semibold uppercase text-slate-500">
-                      Default District (Akarere)
+                      Center District (Akarere)
                     </span>
                     <p className="text-sm font-extrabold text-[#23285E]">
-                      {isOtherDistrict ? district : 'NYABIHU DISTRICT (Default)'}
+                      NYABIHU DISTRICT
                     </p>
                   </div>
                 </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsOtherDistrict(!isOtherDistrict)}
-                  className="text-xs font-bold text-[#3591C8] hover:text-[#23285E] underline cursor-pointer"
-                >
-                  {isOtherDistrict ? 'Reset to Nyabihu' : 'Change District'}
-                </button>
+                <span className="text-xs font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
+                  Active Center
+                </span>
               </div>
-
-              {isOtherDistrict && (
-                <div>
-                  <label className="block text-xs font-bold uppercase tracking-wider text-[#23285E] mb-1.5">
-                    Select Your District (Hitamo Akarere)
-                  </label>
-                  <select
-                    value={district}
-                    onChange={(e) => setDistrict(e.target.value)}
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-sm font-semibold text-slate-800 focus:bg-white focus:outline-none focus:border-[#3591C8]"
-                  >
-                    {ALL_RWANDA_DISTRICTS.map((d) => (
-                      <option key={d} value={d}>
-                        {d}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
 
               {/* Sector / Umurenge */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs font-bold uppercase tracking-wider text-[#23285E]">
-                    Sector (Umurenge)
+                    Sector (Umurenge) <span className="text-rose-500">*</span>
                   </label>
-                  {!isOtherDistrict && (
-                    <span className="text-[11px] text-slate-500 font-medium">
-                      Select your Nyabihu sector
-                    </span>
-                  )}
+                  <span className="text-[11px] text-slate-500 font-medium">
+                    Select your Nyabihu sector
+                  </span>
                 </div>
 
-                {!isOtherDistrict ? (
-                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-2">
-                    {NYABIHU_SECTORS.map((sec) => {
-                      const isSelected = sector === sec;
-                      return (
-                        <button
-                          key={sec}
-                          type="button"
-                          onClick={() => {
-                            setSector(sec);
-                            setCustomSector('');
-                          }}
-                          className={`py-2 px-2 rounded-xl text-xs font-bold text-center border-2 transition-all cursor-pointer truncate ${
-                            isSelected
-                              ? 'border-[#23285E] bg-[#23285E] text-white shadow-xs'
-                              : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-white'
-                          }`}
-                        >
-                          {sec}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <input
-                    type="text"
-                    value={customSector}
-                    onChange={(e) => setCustomSector(e.target.value)}
-                    placeholder="Enter Sector name (e.g. Gisenyi, Muhoza)"
-                    className="w-full px-3.5 py-2.5 bg-slate-50 border-2 border-slate-200 rounded-xl text-sm font-semibold text-slate-800 placeholder:text-slate-400 focus:bg-white focus:outline-none focus:border-[#3591C8]"
-                  />
-                )}
+                <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-2">
+                  {NYABIHU_SECTORS.map((sec) => {
+                    const isSelected = sector === sec;
+                    return (
+                      <button
+                        key={sec}
+                        type="button"
+                        onClick={() => {
+                          setSector(sec);
+                          setCustomSector('');
+                        }}
+                        className={`py-2 px-2 rounded-xl text-xs font-bold text-center border-2 transition-all cursor-pointer truncate ${
+                          isSelected
+                            ? 'border-[#23285E] bg-[#23285E] text-white shadow-xs'
+                            : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-white'
+                        }`}
+                      >
+                        {sec}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Optional Cell & Village */}

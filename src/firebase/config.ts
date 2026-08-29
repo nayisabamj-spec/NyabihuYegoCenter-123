@@ -44,7 +44,7 @@ googleProvider.setCustomParameters({
 });
 
 // Initialize Firestore
-export const db = getFirestore(app);
+export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId || '(default)');
 
 export const DEFAULT_DIRECTOR_EMAIL = 'nyirabakundamarie@gmail.com';
 
