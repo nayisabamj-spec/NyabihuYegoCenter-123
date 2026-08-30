@@ -87,6 +87,21 @@ export interface SystemSettings {
   address: string;
   primaryColor: string;
   secondaryColor: string;
+  // Logo & Branding Settings
+  logoUrl?: string;
+  includeLogoInExcel?: boolean;
+  includeLogoInPdf?: boolean;
+  // Excel Export Settings
+  excelHeaderAccentColor?: string;
+  excelSecondaryColor?: string;
+  excelYellowAccentColor?: string;
+  excelHeaderTextColor?: string;
+  excelSubtitle?: string;
+  excelExportColumns?: string[];
+  excelColumnOrder?: string[];
+  includeServiceBreakdownSheet?: boolean;
+  includeSectorBreakdownSheet?: boolean;
+  excelFooterNote?: string;
   updatedAt: string;
 }
 
@@ -228,5 +243,20 @@ export interface NotificationSettings {
   notifySystemAlerts: boolean;
   notifyServiceUpdates: boolean;
   soundEnabled: boolean;
+}
+
+export interface ExportTitlesConfig {
+  reportMainTitle: string;
+  reportSubTitle: string;
+  excelRegisterTitle: string;
+  excelLocationHeader: string;
+  pdfSection1Title: string;
+  pdfSection2Title: string;
+  pdfSection3Title: string;
+  pdfFooterText: string;
+  attendanceSheetTitle: string;
+  serviceSummarySheetTitle: string;
+  sectorSummarySheetTitle: string;
+  preparedByLabel: string;
 }
 

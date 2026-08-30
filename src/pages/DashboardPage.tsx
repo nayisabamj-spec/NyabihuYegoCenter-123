@@ -30,7 +30,7 @@ interface DashboardPageProps {
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
   const { userProfile, isDirector } = useAuth();
-  const { attendanceRecords, services, districts, activeDistrictFilter, seedRealisticData, loadingData } = useApp();
+  const { attendanceRecords, services, districts, activeDistrictFilter, seedRealisticData, loadingData, refreshAttendanceData } = useApp();
 
   const [period, setPeriod] = useState<PeriodType>('this_month');
   const [customStart, setCustomStart] = useState<string>('');
@@ -69,13 +69,34 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
           <h1 className="text-2xl sm:text-3xl font-extrabold text-[#23285E]">
             Welcome, {userProfile?.fullName || 'Administrator'}
           </h1>
-          <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Youth Services & Attendance Monitoring Dashboard
-          </p>
+          <div className="flex flex-wrap items-center gap-3 mt-1.5">
+            <p className="text-xs sm:text-sm text-slate-500">
+              Youth Services & Attendance Monitoring Dashboard
+            </p>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+              </span>
+              Real-time Live Sync Active
+            </div>
+            <span className="text-[11px] text-slate-400 font-medium">
+              • {attendanceRecords.length.toLocaleString()} total documents in Firestore
+            </span>
+          </div>
         </div>
 
         {/* Action button */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+          <Button
+            variant="ghost"
+            size="md"
+            onClick={() => refreshAttendanceData()}
+            disabled={loadingData}
+            className="text-xs font-semibold text-[#3591C8] hover:bg-blue-50 border border-blue-100"
+          >
+            {loadingData ? 'Syncing...' : 'Sync Firestore'}
+          </Button>
           <Button
             variant="primary"
             size="md"

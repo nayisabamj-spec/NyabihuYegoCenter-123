@@ -1,12 +1,27 @@
+import ExcelJS from 'exceljs';
 import {
   AttendanceRecord,
   ServiceAttendanceSummary,
   PeriodDateRange,
   UserProfile,
   DashboardStats,
-  ColumnsConfig
+  ColumnsConfig,
+  ExportTitlesConfig,
+  SystemSettings,
 } from '../types';
-import { ALL_COLUMNS, DEFAULT_COLUMNS_CONFIG } from '../constants/columns';
+import { loadSavedExportTitles } from '../constants/exportTitles';
+import { BRAND_CONFIG } from '../constants/branding';
+import {
+  ALL_EXCEL_COLUMNS,
+  DEFAULT_EXCEL_EXPORT_COLUMNS,
+  DEFAULT_EXCEL_HEADER_ACCENT_COLOR,
+  DEFAULT_EXCEL_SECONDARY_COLOR,
+  DEFAULT_EXCEL_YELLOW_ACCENT_COLOR,
+  DEFAULT_EXCEL_HEADER_TEXT_COLOR,
+  DEFAULT_EXCEL_SUBTITLE,
+  ExcelColumnDefinition,
+} from '../constants/excelExportSettings';
+import { getOfficialLogoBase64 } from './logoLoader';
 
 interface ExportExcelOptions {
   records: AttendanceRecord[];
@@ -16,16 +31,19 @@ interface ExportExcelOptions {
   stats?: DashboardStats | null;
   serviceBreakdown?: ServiceAttendanceSummary[];
   columnsConfig?: ColumnsConfig;
+  customTitles?: Partial<ExportTitlesConfig>;
+  settings?: SystemSettings | null;
 }
 
-function escapeXml(str: string | number | null | undefined): string {
-  if (str === null || str === undefined) return '';
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+/**
+ * Converts a hex color string (#23285E) to an ExcelJS 8-character ARGB string (FF23285E)
+ */
+function hexToArgb(hex?: string, fallback = 'FF23285E'): string {
+  if (!hex) return fallback;
+  const clean = hex.replace('#', '').trim();
+  if (clean.length === 6) return `FF${clean.toUpperCase()}`;
+  if (clean.length === 8) return clean.toUpperCase();
+  return fallback;
 }
 
 export async function exportDetailedAttendanceToExcel({
@@ -35,8 +53,44 @@ export async function exportDetailedAttendanceToExcel({
   userProfile,
   stats,
   serviceBreakdown,
-  columnsConfig = DEFAULT_COLUMNS_CONFIG,
-}: ExportExcelOptions) {
+  customTitles,
+  settings,
+}: ExportExcelOptions): Promise<void> {
+  const savedTitles = loadSavedExportTitles();
+  const titles: ExportTitlesConfig = {
+    ...savedTitles,
+    ...customTitles,
+  };
+
+  // 1. Resolve Branding values dynamically from Settings (or defaults)
+  const effectiveCenterName =
+    settings?.centerName?.trim() ||
+    titles.reportMainTitle?.trim() ||
+    BRAND_CONFIG.name ||
+    'NYABIHU YEGO CENTER';
+
+  const effectiveSubtitle =
+    settings?.excelSubtitle?.trim() ||
+    titles.excelLocationHeader?.trim() ||
+    titles.reportSubTitle?.trim() ||
+    DEFAULT_EXCEL_SUBTITLE;
+
+  const headerBgHex = settings?.excelHeaderAccentColor?.trim() || DEFAULT_EXCEL_HEADER_ACCENT_COLOR;
+  const headerBgArgb = hexToArgb(headerBgHex, 'FF23285E');
+
+  const secondaryColorHex = settings?.excelSecondaryColor?.trim() || DEFAULT_EXCEL_SECONDARY_COLOR;
+  const secondaryColorArgb = hexToArgb(secondaryColorHex, 'FF3591C8');
+
+  const yellowAccentHex = settings?.excelYellowAccentColor?.trim() || DEFAULT_EXCEL_YELLOW_ACCENT_COLOR;
+  const yellowAccentArgb = hexToArgb(yellowAccentHex, 'FFE6E65A');
+
+  const headerTextHex = settings?.excelHeaderTextColor?.trim() || DEFAULT_EXCEL_HEADER_TEXT_COLOR;
+  const headerTextArgb = hexToArgb(headerTextHex, 'FFFFFFFF');
+
+  const shouldIncludeLogo = settings?.includeLogoInExcel !== false;
+  const shouldIncludeServiceSheet = settings?.includeServiceBreakdownSheet !== false;
+  const shouldIncludeSectorSheet = settings?.includeSectorBreakdownSheet !== false;
+
   const formattedDistrict = districtName.toUpperCase().includes('NYABIHU')
     ? 'NYABIHU DISTRICT'
     : districtName.toUpperCase();
@@ -44,54 +98,187 @@ export async function exportDetailedAttendanceToExcel({
   const maleCount = records.filter((r) => r.sex === 'Male').length;
   const femaleCount = records.filter((r) => r.sex === 'Female').length;
 
-  const activeCols = ALL_COLUMNS.filter(c => !!columnsConfig[c.key]);
-  const totalColCount = Math.max(1, activeCols.length + 1); // +1 for "No." column
-  const mergeAcrossTotal = Math.max(0, totalColCount - 1);
-  const part1Merge = Math.max(0, Math.floor((totalColCount - 1) / 3));
-  const part2Merge = Math.max(0, Math.floor((totalColCount - 1) / 3));
-  const part3Merge = Math.max(0, (totalColCount - 1) - part1Merge - part2Merge - 1);
+  // 2. Resolve Active Ordered Columns dynamically
+  let activeCols: ExcelColumnDefinition[] = [];
 
-  // Build Worksheet 1: Attendance Register
-  let registerRowsXml = '';
+  if (Array.isArray(settings?.excelExportColumns) && settings.excelExportColumns.length > 0) {
+    const chosenCols: ExcelColumnDefinition[] = [];
+    settings.excelExportColumns.forEach((colKey) => {
+      const match = ALL_EXCEL_COLUMNS.find((c) => c.key === colKey);
+      if (match && !chosenCols.some((c) => c.key === match.key)) {
+        chosenCols.push(match);
+      }
+    });
 
-  // Title row
-  registerRowsXml += `
-    <Row ss:Height="30">
-      <Cell ss:MergeAcross="${mergeAcrossTotal}" ss:StyleID="TitleHeader">
-        <Data ss:Type="String">NYABIHU YEGO CENTER - OFFICIAL YOUTH ATTENDANCE REGISTER</Data>
-      </Cell>
-    </Row>
-    <Row ss:Height="22">
-      <Cell ss:MergeAcross="${mergeAcrossTotal}" ss:StyleID="SubHeader">
-        <Data ss:Type="String">Location: ${escapeXml(formattedDistrict)} | Nyabihu Youth Empowerment for Global Opportunity (YEGO) Center</Data>
-      </Cell>
-    </Row>
-    <Row ss:Height="20">
-      <Cell ss:MergeAcross="${part1Merge}" ss:StyleID="MetaCell">
-        <Data ss:Type="String">Date Range: ${escapeXml(range.label)} (${escapeXml(range.startDate)} to ${escapeXml(range.endDate)})</Data>
-      </Cell>
-      <Cell ss:MergeAcross="${part2Merge}" ss:StyleID="MetaCell">
-        <Data ss:Type="String">Total Visitors: ${records.length} (Male: ${maleCount} | Female: ${femaleCount})</Data>
-      </Cell>
-      <Cell ss:MergeAcross="${part3Merge}" ss:StyleID="MetaRight">
-        <Data ss:Type="String">Exported: ${escapeXml(new Date().toLocaleString())} by ${escapeXml(userProfile?.fullName || 'Administrator')}</Data>
-      </Cell>
-    </Row>
-    <Row ss:Height="8"><Cell/></Row>
-    <Row ss:Height="26">
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">No.</Data></Cell>
-      ${activeCols.map(c => `<Cell ss:StyleID="ColHeader"><Data ss:Type="String">${escapeXml(c.exportHeader)}</Data></Cell>`).join('\n      ')}
-    </Row>
-  `;
+    // Ensure 'no' and 'personName' are strictly present
+    if (!chosenCols.some((c) => c.key === 'no')) {
+      const noCol = ALL_EXCEL_COLUMNS.find((c) => c.key === 'no')!;
+      chosenCols.unshift(noCol);
+    }
+    if (!chosenCols.some((c) => c.key === 'personName')) {
+      const nameCol = ALL_EXCEL_COLUMNS.find((c) => c.key === 'personName')!;
+      const noIdx = chosenCols.findIndex((c) => c.key === 'no');
+      chosenCols.splice(noIdx + 1, 0, nameCol);
+    }
 
-  records.forEach((r, idx) => {
-    const isEven = idx % 2 === 0;
-    const cellStyle = isEven ? 'DataRowEven' : 'DataRowOdd';
-    const centerStyle = isEven ? 'DataCenterEven' : 'DataCenterOdd';
-    const nameStyle = isEven ? 'DataNameEven' : 'DataNameOdd';
-    const sexStyle = r.sex === 'Female'
-      ? (isEven ? 'DataSexFemaleEven' : 'DataSexFemaleOdd')
-      : (isEven ? 'DataSexMaleEven' : 'DataSexMaleOdd');
+    activeCols = chosenCols;
+  } else {
+    activeCols = DEFAULT_EXCEL_EXPORT_COLUMNS.map((k) =>
+      ALL_EXCEL_COLUMNS.find((c) => c.key === k)!
+    ).filter(Boolean);
+  }
+
+  // 3. Initialize ExcelJS Workbook
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = effectiveCenterName;
+  workbook.lastModifiedBy = userProfile?.fullName || 'Administrator';
+  workbook.created = new Date();
+  workbook.modified = new Date();
+
+  // Load official Logo for inclusion in the workbook
+  let logoAsset: { base64: string; extension: 'png' | 'jpeg' } | null = null;
+  if (shouldIncludeLogo) {
+    try {
+      logoAsset = await getOfficialLogoBase64(settings?.logoUrl);
+    } catch {
+      logoAsset = null;
+    }
+  }
+
+  // ==========================================
+  // SHEET 1: ATTENDANCE REGISTER
+  // ==========================================
+  const sheet1Name = (titles.attendanceSheetTitle || 'Attendance Register').substring(0, 31);
+  const wsRegister = workbook.addWorksheet(sheet1Name, {
+    views: [{ state: 'frozen', ySplit: 6 }],
+    properties: { defaultRowHeight: 20 },
+  });
+
+  const lastColNum = activeCols.length;
+  const lastColLetter = wsRegister.getColumn(lastColNum).letter;
+
+  // Set column widths
+  activeCols.forEach((col, index) => {
+    wsRegister.getColumn(index + 1).width = Math.max(col.width, 10);
+  });
+
+  // Row 1: Spacer / Logo margin
+  wsRegister.getRow(1).height = 10;
+
+  // Row 2: Main Brand Title Banner (Navy Blue with Bold White text)
+  const titleRow = wsRegister.getRow(2);
+  titleRow.height = 42;
+  wsRegister.mergeCells(`A2:${lastColLetter}2`);
+  const titleCell = wsRegister.getCell('A2');
+  titleCell.value = `   ${effectiveCenterName.toUpperCase()} — OFFICIAL YOUTH ATTENDANCE REGISTER`;
+  titleCell.font = { name: 'Calibri', size: 14, bold: true, color: { argb: headerTextArgb } };
+  titleCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: headerBgArgb },
+  };
+  titleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: shouldIncludeLogo && logoAsset ? 7 : 1 };
+
+  // Row 3: Accent Yellow Brand Line (#E6E65A)
+  const yellowRow = wsRegister.getRow(3);
+  yellowRow.height = 5;
+  wsRegister.mergeCells(`A3:${lastColLetter}3`);
+  const yellowCell = wsRegister.getCell('A3');
+  yellowCell.value = '';
+  yellowCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: yellowAccentArgb },
+  };
+
+  // Row 4: Subtitle & Location Banner (Light Slate with Navy text)
+  const subRow = wsRegister.getRow(4);
+  subRow.height = 22;
+  wsRegister.mergeCells(`A4:${lastColLetter}4`);
+  const subCell = wsRegister.getCell('A4');
+  subCell.value = `  Location: ${formattedDistrict}  |  ${effectiveSubtitle}`;
+  subCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+  subCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFF1F5F9' },
+  };
+  subCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+  // Row 5: Metadata Info Bar (Reporting period & totals)
+  const metaRow = wsRegister.getRow(5);
+  metaRow.height = 20;
+  wsRegister.mergeCells(`A5:${lastColLetter}5`);
+  const metaCell = wsRegister.getCell('A5');
+  const generatedTimeStr = new Date().toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  metaCell.value = `  Period: ${range.label} (${range.startDate} to ${range.endDate})   •   Total: ${records.length} visitors (Male: ${maleCount}  |  Female: ${femaleCount})   •   Exported: ${generatedTimeStr} by ${userProfile?.fullName || 'Administrator'}`;
+  metaCell.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF475569' } };
+  metaCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFFFFFFF' },
+  };
+  metaCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  metaCell.border = {
+    bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  };
+
+  // Embed Logo Image if available
+  if (shouldIncludeLogo && logoAsset) {
+    try {
+      const imageId = workbook.addImage({
+        base64: logoAsset.base64,
+        extension: logoAsset.extension,
+      });
+
+      wsRegister.addImage(imageId, {
+        tl: { col: 0.15, row: 1.15 },
+        ext: { width: 44, height: 44 },
+        editAs: 'oneCell',
+      });
+    } catch (e) {
+      console.warn('Could not insert logo image into Excel:', e);
+    }
+  }
+
+  // Row 6: Table Column Headers
+  const headerRow = wsRegister.getRow(6);
+  headerRow.height = 26;
+  activeCols.forEach((col, idx) => {
+    const cell = headerRow.getCell(idx + 1);
+    cell.value = col.exportHeader;
+    cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerTextArgb } };
+    cell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: headerBgArgb },
+    };
+    cell.alignment = {
+      vertical: 'middle',
+      horizontal: ['no', 'sex'].includes(col.key) ? 'center' : 'left',
+      wrapText: false,
+    };
+    cell.border = {
+      top: { style: 'medium', color: { argb: yellowAccentArgb } },
+      bottom: { style: 'medium', color: { argb: secondaryColorArgb } },
+      left: { style: 'thin', color: { argb: 'FF334155' } },
+      right: { style: 'thin', color: { argb: 'FF334155' } },
+    };
+  });
+
+  // Rows 7+: Data Rows with alternating zebra row styling & formatted cells
+  let currentRowIdx = 7;
+  records.forEach((r, recordIdx) => {
+    const dataRow = wsRegister.getRow(currentRowIdx);
+    dataRow.height = 21;
+    const isEven = recordIdx % 2 === 0;
+    const rowBgArgb = isEven ? 'FFFFFFFF' : 'FFF8FAFC';
 
     const nationalIdFormatted = r.nationalId
       ? r.nationalId.length === 16
@@ -99,404 +286,314 @@ export async function exportDetailedAttendanceToExcel({
         : r.nationalId
       : '—';
 
-    let cellsXml = `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${idx + 1}</Data></Cell>`;
+    activeCols.forEach((col, colIdx) => {
+      const cell = dataRow.getCell(colIdx + 1);
+      cell.font = { name: 'Calibri', size: 9.5, color: { argb: 'FF1F222C' } };
+      cell.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: rowBgArgb },
+      };
+      cell.border = {
+        bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+        left: { style: 'thin', color: { argb: 'FFF1F5F9' } },
+        right: { style: 'thin', color: { argb: 'FFF1F5F9' } },
+      };
 
-    activeCols.forEach((col) => {
       switch (col.key) {
-        case 'recordId':
-          cellsXml += `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${escapeXml(r.id)}</Data></Cell>`;
-          break;
-        case 'attendanceDate':
-          cellsXml += `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${escapeXml(r.attendanceDate)}</Data></Cell>`;
-          break;
-        case 'attendanceTime':
-          cellsXml += `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${escapeXml(r.attendanceTime)}</Data></Cell>`;
+        case 'no':
+          cell.value = recordIdx + 1;
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: 'FF64748B' } };
           break;
         case 'personName':
-          cellsXml += `<Cell ss:StyleID="${nameStyle}"><Data ss:Type="String">${escapeXml(r.personName)}</Data></Cell>`;
+          cell.value = r.personName || '—';
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
           break;
         case 'sex':
-          cellsXml += `<Cell ss:StyleID="${sexStyle}"><Data ss:Type="String">${escapeXml(r.sex)}</Data></Cell>`;
+          cell.value = r.sex || '—';
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          if (r.sex === 'Male') {
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: 'FF1D4ED8' } };
+          } else if (r.sex === 'Female') {
+            cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: 'FFBE185D' } };
+          }
           break;
         case 'serviceName':
-          cellsXml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(r.serviceNameSnapshot)}</Data></Cell>`;
+          cell.value = r.serviceNameSnapshot || '—';
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
           break;
         case 'districtName':
-          cellsXml += `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${escapeXml(r.districtName || 'NYABIHU')}</Data></Cell>`;
+          cell.value = r.districtName || r.districtId || formattedDistrict;
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
           break;
         case 'sector':
-          cellsXml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(r.sector || 'Mukamira')}</Data></Cell>`;
+          cell.value = r.sector || 'Mukamira';
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
           break;
         case 'cell':
-          cellsXml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(r.cell || '—')}</Data></Cell>`;
+          cell.value = r.cell || '—';
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
           break;
         case 'village':
-          cellsXml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(r.village || '—')}</Data></Cell>`;
+          cell.value = r.village || '—';
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
           break;
         case 'phoneNumber':
-          cellsXml += `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${escapeXml(r.phoneNumber || '—')}</Data></Cell>`;
-          break;
-        case 'email':
-          cellsXml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(r.email || '—')}</Data></Cell>`;
+          cell.value = r.phoneNumber || '—';
+          cell.numFmt = '@'; // Explicit text format to protect leading zero
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
           break;
         case 'nationalId':
-          cellsXml += `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${escapeXml(nationalIdFormatted)}</Data></Cell>`;
+          cell.value = nationalIdFormatted;
+          cell.numFmt = '@'; // Explicit text format for 16 digits
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.font = { name: 'Consolas', size: 9, color: { argb: 'FF334155' } };
           break;
-        case 'entryMethod':
-          cellsXml += `<Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${r.isSelfCheckIn ? 'Visitor Self Check-In' : 'Staff Desk Entry'}</Data></Cell>`;
-          break;
-        case 'recordedBy':
-          cellsXml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(r.recordedBy)}</Data></Cell>`;
-          break;
-        case 'notes':
-          cellsXml += `<Cell ss:StyleID="${cellStyle}"><Data ss:Type="String">${escapeXml(r.notes || '—')}</Data></Cell>`;
-          break;
+        default:
+          cell.value = '';
       }
     });
 
-    registerRowsXml += `
-      <Row ss:Height="22">
-        ${cellsXml}
-      </Row>
-    `;
+    currentRowIdx++;
   });
 
-  // Build Worksheet 2: Service Summary
-  const breakdownList = serviceBreakdown || stats?.serviceBreakdown || [];
-  let totalMale = 0;
-  let totalFemale = 0;
-  let grandTotal = 0;
+  // Bottom Summary / Sign-off Row
+  const totalRow = wsRegister.getRow(currentRowIdx);
+  totalRow.height = 24;
+  wsRegister.mergeCells(`A${currentRowIdx}:B${currentRowIdx}`);
+  const totalLabelCell = totalRow.getCell(1);
+  totalLabelCell.value = `TOTAL ATTENDEES: ${records.length}`;
+  totalLabelCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+  totalLabelCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFDFF8F5' }, // Soft Mint
+  };
+  totalLabelCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
 
-  let summaryRowsXml = `
-    <Row ss:Height="28">
-      <Cell ss:MergeAcross="6" ss:StyleID="TitleHeader">
-        <Data ss:Type="String">NYABIHU YEGO CENTER - SERVICES ATTENDANCE SUMMARY</Data>
-      </Cell>
-    </Row>
-    <Row ss:Height="20">
-      <Cell ss:MergeAcross="6" ss:StyleID="SubHeader">
-        <Data ss:Type="String">District: ${escapeXml(formattedDistrict)} | Period: ${escapeXml(range.label)} (${escapeXml(range.startDate)} to ${escapeXml(range.endDate)})</Data>
-      </Cell>
-    </Row>
-    <Row ss:Height="8"><Cell/></Row>
-    <Row ss:Height="24">
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">No.</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Youth Service Program (Serivisi)</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Male Visits (Gabo)</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Female Visits (Gore)</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Total Attendance</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Male %</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Total Share %</Data></Cell>
-    </Row>
-  `;
+  for (let c = 3; c <= lastColNum; c++) {
+    const cCell = totalRow.getCell(c);
+    cCell.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFDFF8F5' },
+    };
+    cCell.border = {
+      top: { style: 'medium', color: { argb: secondaryColorArgb } },
+      bottom: { style: 'double', color: { argb: headerBgArgb } },
+    };
+  }
 
-  breakdownList.forEach((s, idx) => {
-    totalMale += s.maleCount;
-    totalFemale += s.femaleCount;
-    grandTotal += s.totalCount;
+  // ==========================================
+  // SHEET 2: SERVICE BREAKDOWN SUMMARY
+  // ==========================================
+  const effectiveBreakdown = serviceBreakdown || stats?.serviceBreakdown || [];
+  if (shouldIncludeServiceSheet && effectiveBreakdown.length > 0) {
+    const sheet2Name = (titles.serviceSummarySheetTitle || 'Service Summary').substring(0, 31);
+    const wsSummary = workbook.addWorksheet(sheet2Name, {
+      views: [{ state: 'frozen', ySplit: 5 }],
+      properties: { defaultRowHeight: 20 },
+    });
 
-    const isEven = idx % 2 === 0;
-    const rowStyle = isEven ? 'DataRowEven' : 'DataRowOdd';
-    const centerStyle = isEven ? 'DataCenterEven' : 'DataCenterOdd';
-    const nameStyle = isEven ? 'DataNameEven' : 'DataNameOdd';
-    const mShare = s.totalCount > 0 ? ((s.maleCount / s.totalCount) * 100).toFixed(1) + '%' : '0%';
+    wsSummary.columns = [
+      { header: 'No.', key: 'no', width: 8 },
+      { header: 'Service Name', key: 'name', width: 34 },
+      { header: 'Male Visits', key: 'male', width: 16 },
+      { header: 'Female Visits', key: 'female', width: 16 },
+      { header: 'Total Visits', key: 'total', width: 16 },
+      { header: 'Share (%)', key: 'share', width: 14 },
+    ];
 
-    summaryRowsXml += `
-      <Row ss:Height="22">
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${idx + 1}</Data></Cell>
-        <Cell ss:StyleID="${nameStyle}"><Data ss:Type="String">${escapeXml(s.serviceName)}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${s.maleCount}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${s.femaleCount}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${s.totalCount}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${mShare}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${s.percentage}%</Data></Cell>
-      </Row>
-    `;
-  });
+    // Banner
+    wsSummary.mergeCells('A1:F1');
+    const sTitle = wsSummary.getCell('A1');
+    sTitle.value = `  ${effectiveCenterName.toUpperCase()} — SERVICE UTILIZATION BREAKDOWN`;
+    sTitle.font = { name: 'Calibri', size: 12, bold: true, color: { argb: headerTextArgb } };
+    sTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerBgArgb } };
+    sTitle.alignment = { vertical: 'middle', horizontal: 'left' };
+    wsSummary.getRow(1).height = 36;
 
-  summaryRowsXml += `
-    <Row ss:Height="24">
-      <Cell ss:StyleID="TotalRow"><Data ss:Type="String"></Data></Cell>
-      <Cell ss:StyleID="TotalRow"><Data ss:Type="String">TOTAL ATTENDANCE</Data></Cell>
-      <Cell ss:StyleID="TotalRow"><Data ss:Type="Number">${totalMale}</Data></Cell>
-      <Cell ss:StyleID="TotalRow"><Data ss:Type="Number">${totalFemale}</Data></Cell>
-      <Cell ss:StyleID="TotalRow"><Data ss:Type="Number">${grandTotal}</Data></Cell>
-      <Cell ss:StyleID="TotalRow"><Data ss:Type="String">${grandTotal > 0 ? ((totalMale / grandTotal) * 100).toFixed(1) + '%' : '0%'}</Data></Cell>
-      <Cell ss:StyleID="TotalRow"><Data ss:Type="String">100.0%</Data></Cell>
-    </Row>
-  `;
+    // Yellow line
+    wsSummary.mergeCells('A2:F2');
+    const sYellow = wsSummary.getCell('A2');
+    sYellow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: yellowAccentArgb } };
+    wsSummary.getRow(2).height = 4;
 
-  // Build Worksheet 3: Sectors Breakdown
-  const sectorCounts: Record<string, { male: number; female: number; total: number }> = {};
-  records.forEach((r) => {
-    const sec = r.sector || 'Mukamira';
-    if (!sectorCounts[sec]) {
-      sectorCounts[sec] = { male: 0, female: 0, total: 0 };
+    // Subtitle
+    wsSummary.mergeCells('A3:F3');
+    const sSub = wsSummary.getCell('A3');
+    sSub.value = `  District: ${formattedDistrict}  |  Period: ${range.label} (${range.startDate} to ${range.endDate})`;
+    sSub.font = { name: 'Calibri', size: 9.5, italic: true, color: { argb: 'FF475569' } };
+    sSub.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    wsSummary.getRow(3).height = 20;
+
+    // Blank row
+    wsSummary.getRow(4).height = 8;
+
+    // Headers
+    const sHeadRow = wsSummary.getRow(5);
+    sHeadRow.height = 24;
+    ['No.', 'Service Name', 'Male Visits', 'Female Visits', 'Total Visits', 'Share (%)'].forEach((h, i) => {
+      const cell = sHeadRow.getCell(i + 1);
+      cell.value = h;
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerTextArgb } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerBgArgb } };
+      cell.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : i > 1 ? 'right' : 'left' };
+    });
+
+    let sRowIdx = 6;
+    let totMale = 0;
+    let totFemale = 0;
+    let totAll = 0;
+
+    effectiveBreakdown.forEach((s, idx) => {
+      totMale += s.maleCount;
+      totFemale += s.femaleCount;
+      totAll += s.totalCount;
+
+      const r = wsSummary.getRow(sRowIdx);
+      r.height = 20;
+      const isEven = idx % 2 === 0;
+      const bg = isEven ? 'FFFFFFFF' : 'FFF8FAFC';
+
+      r.getCell(1).value = idx + 1;
+      r.getCell(1).alignment = { horizontal: 'center' };
+      r.getCell(2).value = s.serviceName;
+      r.getCell(2).font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
+      r.getCell(3).value = s.maleCount;
+      r.getCell(4).value = s.femaleCount;
+      r.getCell(5).value = s.totalCount;
+      r.getCell(5).font = { name: 'Calibri', size: 9.5, bold: true };
+      r.getCell(6).value = `${s.percentage}%`;
+
+      for (let c = 1; c <= 6; c++) {
+        r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+        r.getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+      }
+      sRowIdx++;
+    });
+
+    // Total row
+    const sTotRow = wsSummary.getRow(sRowIdx);
+    sTotRow.height = 24;
+    sTotRow.getCell(2).value = 'TOTAL ALL SERVICES';
+    sTotRow.getCell(2).font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+    sTotRow.getCell(3).value = totMale;
+    sTotRow.getCell(4).value = totFemale;
+    sTotRow.getCell(5).value = totAll;
+    sTotRow.getCell(5).font = { name: 'Calibri', size: 10, bold: true };
+    sTotRow.getCell(6).value = '100.0%';
+
+    for (let c = 1; c <= 6; c++) {
+      sTotRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDFF8F5' } };
+      sTotRow.getCell(c).border = {
+        top: { style: 'medium', color: { argb: secondaryColorArgb } },
+        bottom: { style: 'double', color: { argb: headerBgArgb } },
+      };
     }
-    if (r.sex === 'Male') sectorCounts[sec].male += 1;
-    else sectorCounts[sec].female += 1;
-    sectorCounts[sec].total += 1;
-  });
+  }
 
-  const sortedSectors = Object.entries(sectorCounts).sort((a, b) => b[1].total - a[1].total);
+  // ==========================================
+  // SHEET 3: SECTOR BREAKDOWN SUMMARY
+  // ==========================================
+  const nyabihuSectors = [
+    'Bigogwe', 'Jenda', 'Mukamira', 'Rambura', 'Rugera',
+    'Rurembo', 'Shyira', 'Kabatwa', 'Jomba', 'Karago', 'Kintobo', 'Other'
+  ];
 
-  let sectorRowsXml = `
-    <Row ss:Height="28">
-      <Cell ss:MergeAcross="5" ss:StyleID="TitleHeader">
-        <Data ss:Type="String">NYABIHU DISTRICT - SECTOR ORIGIN DISTRIBUTION</Data>
-      </Cell>
-    </Row>
-    <Row ss:Height="20">
-      <Cell ss:MergeAcross="5" ss:StyleID="SubHeader">
-        <Data ss:Type="String">Nyabihu YEGO Center | Attendance origins across sectors</Data>
-      </Cell>
-    </Row>
-    <Row ss:Height="8"><Cell/></Row>
-    <Row ss:Height="24">
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">No.</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Nyabihu Sector (Umurenge)</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Male Youths</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Female Youths</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Total Visitors</Data></Cell>
-      <Cell ss:StyleID="ColHeader"><Data ss:Type="String">Share (%)</Data></Cell>
-    </Row>
-  `;
+  const sectorCounts = nyabihuSectors.map((sec) => {
+    const secRecords = records.filter((r) => (r.sector || 'Mukamira').toLowerCase() === sec.toLowerCase());
+    const m = secRecords.filter((r) => r.sex === 'Male').length;
+    const f = secRecords.filter((r) => r.sex === 'Female').length;
+    const tot = secRecords.length;
+    const pct = records.length > 0 ? ((tot / records.length) * 100).toFixed(1) : '0.0';
+    return { sector: sec, male: m, female: f, total: tot, percentage: pct };
+  }).filter((s) => s.total > 0 || ['Bigogwe', 'Jenda', 'Mukamira', 'Rambura'].includes(s.sector));
 
-  sortedSectors.forEach(([secName, counts], idx) => {
-    const isEven = idx % 2 === 0;
-    const centerStyle = isEven ? 'DataCenterEven' : 'DataCenterOdd';
-    const nameStyle = isEven ? 'DataNameEven' : 'DataNameOdd';
-    const pct = records.length > 0 ? ((counts.total / records.length) * 100).toFixed(1) + '%' : '0%';
+  if (shouldIncludeSectorSheet && sectorCounts.length > 0) {
+    const sheet3Name = (titles.sectorSummarySheetTitle || 'Sector Breakdown').substring(0, 31);
+    const wsSector = workbook.addWorksheet(sheet3Name, {
+      views: [{ state: 'frozen', ySplit: 5 }],
+      properties: { defaultRowHeight: 20 },
+    });
 
-    sectorRowsXml += `
-      <Row ss:Height="20">
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${idx + 1}</Data></Cell>
-        <Cell ss:StyleID="${nameStyle}"><Data ss:Type="String">${escapeXml(secName)}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${counts.male}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${counts.female}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="Number">${counts.total}</Data></Cell>
-        <Cell ss:StyleID="${centerStyle}"><Data ss:Type="String">${pct}</Data></Cell>
-      </Row>
-    `;
-  });
+    wsSector.columns = [
+      { header: 'No.', key: 'no', width: 8 },
+      { header: 'Sector Name (Umurenge)', key: 'sec', width: 28 },
+      { header: 'Male Visitors', key: 'male', width: 16 },
+      { header: 'Female Visitors', key: 'female', width: 16 },
+      { header: 'Total Visitors', key: 'total', width: 16 },
+      { header: 'Share (%)', key: 'share', width: 14 },
+    ];
 
-  // Complete SpreadsheetML XML document
-  const excelXml = `<?xml version="1.0" encoding="UTF-8"?>
-<?mso-application progid="Excel.Sheet"?>
-<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:o="urn:schemas-microsoft-com:office:office"
- xmlns:x="urn:schemas-microsoft-com:office:excel"
- xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"
- xmlns:html="http://www.w3.org/TR/REC-html40">
- <Styles>
-  <Style ss:ID="Default" ss:Name="Normal">
-   <Alignment ss:Vertical="Center"/>
-   <Borders/>
-   <Font ss:FontName="Calibri" x:Family="Swiss" ss:Size="11" ss:Color="#000000"/>
-   <Interior/>
-   <NumberFormat/>
-   <Protection/>
-  </Style>
-  <Style ss:ID="TitleHeader">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#1F222C"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="14" ss:Color="#FFFFFF" ss:Bold="1"/>
-   <Interior ss:Color="#23285E" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="SubHeader">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#23285E" ss:Bold="1"/>
-   <Interior ss:Color="#E6E65A" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="MetaCell">
-   <Alignment ss:Horizontal="Left" ss:Vertical="Center"/>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#1F222C" ss:Bold="1"/>
-  </Style>
-  <Style ss:ID="MetaRight">
-   <Alignment ss:Horizontal="Right" ss:Vertical="Center"/>
-   <Font ss:FontName="Calibri" ss:Size="9" ss:Color="#64748B" ss:Italic="1"/>
-  </Style>
-  <Style ss:ID="ColHeader">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/>
-   <Borders>
-    <Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#1F222C"/>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="2" ss:Color="#1F222C"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#CBD5E1"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#FFFFFF" ss:Bold="1"/>
-   <Interior ss:Color="#23285E" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataRowEven">
-   <Alignment ss:Horizontal="Left" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#1F222C"/>
-   <Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataRowOdd">
-   <Alignment ss:Horizontal="Left" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#1F222C"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataCenterEven">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#1F222C"/>
-   <Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataCenterOdd">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#1F222C"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataNameEven">
-   <Alignment ss:Horizontal="Left" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#23285E" ss:Bold="1"/>
-   <Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataNameOdd">
-   <Alignment ss:Horizontal="Left" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#23285E" ss:Bold="1"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataSexMaleEven">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#1D4ED8" ss:Bold="1"/>
-   <Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataSexMaleOdd">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#1D4ED8" ss:Bold="1"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataSexFemaleEven">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#BE185D" ss:Bold="1"/>
-   <Interior ss:Color="#FFFFFF" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="DataSexFemaleOdd">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#E2E8F0"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="10" ss:Color="#BE185D" ss:Bold="1"/>
-   <Interior ss:Color="#F8FAFC" ss:Pattern="Solid"/>
-  </Style>
-  <Style ss:ID="TotalRow">
-   <Alignment ss:Horizontal="Center" ss:Vertical="Center"/>
-   <Borders>
-    <Border ss:Position="Top" ss:LineStyle="Double" ss:Weight="3" ss:Color="#23285E"/>
-    <Border ss:Position="Bottom" ss:LineStyle="Double" ss:Weight="3" ss:Color="#23285E"/>
-    <Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#94A3B8"/>
-    <Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1" ss:Color="#94A3B8"/>
-   </Borders>
-   <Font ss:FontName="Calibri" ss:Size="11" ss:Color="#23285E" ss:Bold="1"/>
-   <Interior ss:Color="#E2E8F0" ss:Pattern="Solid"/>
-  </Style>
- </Styles>
+    wsSector.mergeCells('A1:F1');
+    const secTitle = wsSector.getCell('A1');
+    secTitle.value = `  ${effectiveCenterName.toUpperCase()} — ATTENDANCE BY NYABIHU SECTOR`;
+    secTitle.font = { name: 'Calibri', size: 12, bold: true, color: { argb: headerTextArgb } };
+    secTitle.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerBgArgb } };
+    secTitle.alignment = { vertical: 'middle', horizontal: 'left' };
+    wsSector.getRow(1).height = 36;
 
- <Worksheet ss:Name="Attendance Register">
-  <Table ss:DefaultRowHeight="18">
-   <Column ss:Width="35"/>
-   <Column ss:Width="95"/>
-   <Column ss:Width="85"/>
-   <Column ss:Width="65"/>
-   <Column ss:Width="160"/>
-   <Column ss:Width="70"/>
-   <Column ss:Width="200"/>
-   <Column ss:Width="95"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="95"/>
-   <Column ss:Width="130"/>
-   <Column ss:Width="140"/>
-   <Column ss:Width="110"/>
-   <Column ss:Width="110"/>
-   <Column ss:Width="150"/>
-   ${registerRowsXml}
-  </Table>
- </Worksheet>
+    wsSector.mergeCells('A2:F2');
+    wsSector.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: yellowAccentArgb } };
+    wsSector.getRow(2).height = 4;
 
- <Worksheet ss:Name="Service Summary">
-  <Table ss:DefaultRowHeight="18">
-   <Column ss:Width="40"/>
-   <Column ss:Width="220"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="80"/>
-   <Column ss:Width="85"/>
-   ${summaryRowsXml}
-  </Table>
- </Worksheet>
+    wsSector.mergeCells('A3:F3');
+    const secSub = wsSector.getCell('A3');
+    secSub.value = `  District: ${formattedDistrict}  |  Identified Sectors: ${sectorCounts.length}  |  Period: ${range.label}`;
+    secSub.font = { name: 'Calibri', size: 9.5, italic: true, color: { argb: 'FF475569' } };
+    secSub.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
+    wsSector.getRow(3).height = 20;
 
- <Worksheet ss:Name="Nyabihu Sectors Breakdown">
-  <Table ss:DefaultRowHeight="18">
-   <Column ss:Width="40"/>
-   <Column ss:Width="160"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="90"/>
-   <Column ss:Width="100"/>
-   <Column ss:Width="80"/>
-   ${sectorRowsXml}
-  </Table>
- </Worksheet>
-</Workbook>`;
+    wsSector.getRow(4).height = 8;
 
-  const blob = new Blob([excelXml], {
-    type: 'application/vnd.ms-excel;charset=utf-8;',
-  });
+    const secHeadRow = wsSector.getRow(5);
+    secHeadRow.height = 24;
+    ['No.', 'Sector Name (Umurenge)', 'Male Visitors', 'Female Visitors', 'Total Visitors', 'Share (%)'].forEach((h, i) => {
+      const cell = secHeadRow.getCell(i + 1);
+      cell.value = h;
+      cell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerTextArgb } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerBgArgb } };
+      cell.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : i > 1 ? 'right' : 'left' };
+    });
 
+    let secRowIdx = 6;
+    sectorCounts.forEach((sec, idx) => {
+      const r = wsSector.getRow(secRowIdx);
+      r.height = 20;
+      const isEven = idx % 2 === 0;
+      const bg = isEven ? 'FFFFFFFF' : 'FFF8FAFC';
+
+      r.getCell(1).value = idx + 1;
+      r.getCell(1).alignment = { horizontal: 'center' };
+      r.getCell(2).value = sec.sector;
+      r.getCell(2).font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
+      r.getCell(3).value = sec.male;
+      r.getCell(4).value = sec.female;
+      r.getCell(5).value = sec.total;
+      r.getCell(5).font = { name: 'Calibri', size: 9.5, bold: true };
+      r.getCell(6).value = `${sec.percentage}%`;
+
+      for (let c = 1; c <= 6; c++) {
+        r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+        r.getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+      }
+      secRowIdx++;
+    });
+  }
+
+  // ==========================================
+  // GENERATE GENUINE .XLSX FILE & TRIGGER BROWSER DOWNLOAD
+  // ==========================================
   const cleanDist = formattedDistrict.replace(/\s+/g, '_');
-  const filename = `Nyabihu_YEGO_Attendance_${cleanDist}_${range.startDate}_to_${range.endDate}.xls`;
+  const filename = `Nyabihu_YEGO_Attendance_${cleanDist}_${range.startDate}_to_${range.endDate}.xlsx`;
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
 
   const url = window.URL.createObjectURL(blob);
   const anchor = document.createElement('a');

@@ -1,12 +1,17 @@
-import { AttendanceRecord, ServiceAttendanceSummary, PeriodDateRange, ColumnsConfig } from '../types';
+import { AttendanceRecord, ServiceAttendanceSummary, PeriodDateRange, ColumnsConfig, ExportTitlesConfig } from '../types';
 import { ALL_COLUMNS, DEFAULT_COLUMNS_CONFIG } from '../constants/columns';
+import { loadSavedExportTitles } from '../constants/exportTitles';
 
 export function exportAttendanceToCSV(
   records: AttendanceRecord[],
   districtName: string,
   range: PeriodDateRange,
-  columnsConfig: ColumnsConfig = DEFAULT_COLUMNS_CONFIG
+  columnsConfig: ColumnsConfig = DEFAULT_COLUMNS_CONFIG,
+  customTitles?: Partial<ExportTitlesConfig>
 ) {
+  const savedTitles = loadSavedExportTitles();
+  const titles = { ...savedTitles, ...customTitles };
+
   // Determine active columns
   const activeCols = ALL_COLUMNS.filter(c => !!columnsConfig[c.key]);
 
@@ -27,13 +32,13 @@ export function exportAttendanceToCSV(
           values.push(`"${r.attendanceTime}"`);
           break;
         case 'personName':
-          values.push(`"${r.personName.replace(/"/g, '""')}"`);
+          values.push(`"${(r.personName || '').replace(/"/g, '""')}"`);
           break;
         case 'sex':
           values.push(`"${r.sex}"`);
           break;
         case 'serviceName':
-          values.push(`"${r.serviceNameSnapshot.replace(/"/g, '""')}"`);
+          values.push(`"${(r.serviceNameSnapshot || '').replace(/"/g, '""')}"`);
           break;
         case 'districtName':
           values.push(`"${(r.districtName || districtName || 'NYABIHU').replace(/"/g, '""')}"`);
@@ -71,8 +76,9 @@ export function exportAttendanceToCSV(
     return values;
   });
 
+  const mainHeader = titles.excelRegisterTitle || `${titles.reportMainTitle} - ATTENDANCE VISITOR REGISTER`;
   const csvContent = '\uFEFF' + [
-    `"NYABIHU YEGO CENTER - ATTENDANCE VISITOR REGISTER"`,
+    `"${mainHeader.replace(/"/g, '""')}"`,
     `"District: ${districtName || 'NYABIHU DISTRICT'}"`,
     `"Period: ${range.label} (${range.startDate} to ${range.endDate})"`,
     `"Total Visitors: ${records.length}"`,
@@ -97,41 +103,41 @@ export function exportSummaryToCSV(
   maleVisits: number,
   femaleVisits: number,
   districtName: string,
-  range: PeriodDateRange
+  range: PeriodDateRange,
+  customTitles?: Partial<ExportTitlesConfig>
 ) {
-  const headers = ['Service Name', 'Male Visits', 'Female Visits', 'Total Visits', 'Percentage Share (%)'];
-  
-  const rows = summaries.map(s => [
+  const savedTitles = loadSavedExportTitles();
+  const titles = { ...savedTitles, ...customTitles };
+
+  const headers = ['No.', 'Service Name', 'Male', 'Female', 'Total Visits', 'Share (%)'];
+
+  const rows = summaries.map((s, idx) => [
+    idx + 1,
     `"${s.serviceName.replace(/"/g, '""')}"`,
     s.maleCount,
     s.femaleCount,
     s.totalCount,
-    `${s.percentage}%`
+    `"${s.percentage}%"`,
   ]);
 
-  rows.push([
-    '"TOTAL"',
-    maleVisits,
-    femaleVisits,
-    totalVisits,
-    '100.0%'
-  ]);
-
+  const summaryHeader = `${titles.reportMainTitle} - ${titles.pdfSection2Title || 'SERVICE ATTENDANCE SUMMARY'}`;
   const csvContent = '\uFEFF' + [
-    `"NYABIHU YEGO CENTER - ATTENDANCE REPORT SUMMARY"`,
-    `"District: ${districtName || 'NYABIHU DISTRICT'}"`,
-    `"Period: ${range.label} (${range.startDate} to ${range.endDate})"`,
-    `"Exported Date: ${new Date().toISOString()}"`,
+    `"${summaryHeader.replace(/"/g, '""')}"`,
+    `"District: ${districtName}"`,
+    `"Reporting Period: ${range.label} (${range.startDate} to ${range.endDate})"`,
+    `"Total Recorded Visits: ${totalVisits} (Male: ${maleVisits}, Female: ${femaleVisits})"`,
     '',
     headers.join(','),
-    ...rows.map(r => r.join(','))
+    ...rows.map(r => r.join(',')),
+    '',
+    `"","TOTAL",${maleVisits},${femaleVisits},${totalVisits},"100.0%"`,
   ].join('\n');
 
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.setAttribute('href', url);
-  link.setAttribute('download', `Nyabihu_Yego_Summary_${(districtName || 'NYABIHU').replace(/\s+/g, '_')}_${range.startDate}_to_${range.endDate}.csv`);
+  link.setAttribute('download', `Nyabihu_Yego_Services_Summary_${districtName.replace(/\s+/g, '_')}_${range.startDate}_to_${range.endDate}.csv`);
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);

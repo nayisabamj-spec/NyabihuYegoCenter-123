@@ -20,17 +20,20 @@ import {
   TableProperties,
   SlidersHorizontal,
   Sliders,
-  RefreshCw
+  RefreshCw,
+  Heading,
+  FileText,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
-import { AttendanceRecord, Sex, ColumnsConfig } from '../types';
+import { AttendanceRecord, Sex, ColumnsConfig, ExportTitlesConfig } from '../types';
 import { Badge } from '../components/common/Badge';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
 import { ColumnCustomizerModal } from '../components/common/ColumnCustomizerModal';
+import { ExportTitlesModal } from '../components/common/ExportTitlesModal';
 import {
   ALL_COLUMNS,
   DEFAULT_COLUMNS_CONFIG,
@@ -38,8 +41,10 @@ import {
   loadSavedColumnsConfig,
   saveColumnsConfig,
 } from '../constants/columns';
+import { loadSavedExportTitles } from '../constants/exportTitles';
 import { exportAttendanceToCSV } from '../utils/csvExport';
 import { exportDetailedAttendanceToExcel } from '../utils/excelExport';
+import { exportAttendanceListToPDF } from '../utils/pdfExport';
 import { getPeriodRange } from '../utils/stats';
 
 interface AttendancePageProps {
@@ -52,11 +57,13 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
     attendanceRecords,
     services,
     districts,
+    settings,
     editAttendance,
     deleteAttendance,
     loadingData,
     dbError,
     refreshAttendanceData,
+    importCommitteeData,
   } = useApp();
   const { toast } = useToast();
 
@@ -65,6 +72,7 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
     loadSavedColumnsConfig(ATTENDANCE_COLS_STORAGE_KEY)
   );
   const [isColumnModalOpen, setIsColumnModalOpen] = useState(false);
+  const [isTitlesModalOpen, setIsTitlesModalOpen] = useState(false);
 
   // Search and Filter States
   const [searchTerm, setSearchTerm] = useState('');
@@ -73,7 +81,9 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [excelGenerating, setExcelGenerating] = useState(false);
+  const [pdfGenerating, setPdfGenerating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [importingCommittee, setImportingCommittee] = useState(false);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -84,6 +94,25 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
       toast.error('Sync Failed', 'Failed to refresh records from database.');
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleImportCommittee = async () => {
+    setImportingCommittee(true);
+    try {
+      const res = await importCommitteeData();
+      if (res.success) {
+        toast.success(
+          '1,694 Official Records Synchronized',
+          'Successfully populated all official records (1,600 Committee Members + 94 Youth Event Attendees) into Firestore.'
+        );
+      } else {
+        toast.error('Import Failed', res.error || 'Could not import records');
+      }
+    } catch (e: any) {
+      toast.error('Import Error', e?.message || 'Error occurred during import');
+    } finally {
+      setImportingCommittee(false);
     }
   };
 
@@ -211,14 +240,14 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportCSV = (overrideTitles?: ExportTitlesConfig) => {
     const range = getPeriodRange('custom', startDate || '2026-01-01', endDate || '2026-12-31');
     const districtName = userProfile?.districtName || 'Nyabihu District';
-    exportAttendanceToCSV(filteredRecords, districtName, range, columnsConfig);
+    exportAttendanceToCSV(filteredRecords, districtName, range, columnsConfig, overrideTitles);
     toast.success('CSV Download Started', `Exported ${filteredRecords.length} records with ${activeColumnCount} columns.`);
   };
 
-  const handleExportExcel = async () => {
+  const handleExportExcel = async (overrideTitles?: ExportTitlesConfig) => {
     setExcelGenerating(true);
     try {
       const range = getPeriodRange('custom', startDate || '2026-01-01', endDate || '2026-12-31');
@@ -229,13 +258,37 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
         districtName,
         userProfile,
         columnsConfig,
+        customTitles: overrideTitles,
+        settings,
       });
-      toast.success('Excel File Generated', `Exported ${filteredRecords.length} attendance records with Nyabihu YEGO summary.`);
+      toast.success('Excel File Generated (.xlsx)', `Exported ${filteredRecords.length} attendance records with customized Nyabihu YEGO headers.`);
     } catch (err) {
       console.error('Error generating Excel file:', err);
       toast.error('Excel Export Error', 'Could not generate the Excel workbook.');
     } finally {
       setExcelGenerating(false);
+    }
+  };
+
+  const handleExportPDF = async (overrideTitles?: ExportTitlesConfig) => {
+    setPdfGenerating(true);
+    try {
+      const range = getPeriodRange('custom', startDate || '2026-01-01', endDate || '2026-12-31');
+      const districtName = userProfile?.districtName || 'Nyabihu District';
+      await exportAttendanceListToPDF({
+        records: filteredRecords,
+        range,
+        userProfile,
+        districtName,
+        settings,
+        customTitles: overrideTitles,
+      });
+      toast.success('PDF Document Generated', `Exported ${filteredRecords.length} attendance records as an official PDF.`);
+    } catch (err) {
+      console.error('Error generating PDF:', err);
+      toast.error('PDF Export Error', 'Could not generate the PDF document.');
+    } finally {
+      setPdfGenerating(false);
     }
   };
 
@@ -276,6 +329,17 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
           <Button
             variant="outline"
             size="sm"
+            onClick={handleImportCommittee}
+            loading={importingCommittee}
+            icon={<Download className="w-4 h-4 text-purple-600" />}
+            className="border-purple-300 text-purple-700 bg-purple-50/50 hover:bg-purple-100"
+            title="Commit and synchronize all 1,694 verified records (including 94 Youth Event Attendees + 1,600 Committee Members) directly into Firebase Firestore"
+          >
+            {attendanceRecords.length >= 1694 ? 'Re-sync Firestore (1,694)' : 'Insert to Firestore (1,694)'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => setIsColumnModalOpen(true)}
             icon={<SlidersHorizontal className="w-4 h-4 text-[#3591C8]" />}
             className="border-slate-300 hover:border-[#3591C8]"
@@ -285,7 +349,16 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
           <Button
             variant="outline"
             size="sm"
-            onClick={handleExportCSV}
+            onClick={() => setIsTitlesModalOpen(true)}
+            icon={<Heading className="w-4 h-4 text-[#3591C8]" />}
+            className="border-slate-300 hover:border-[#3591C8]"
+          >
+            Report Titles
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => handleExportCSV()}
             icon={<FileSpreadsheet className="w-4 h-4 text-slate-600" />}
             disabled={filteredRecords.length === 0}
           >
@@ -294,13 +367,24 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
           <Button
             variant="secondary"
             size="sm"
-            onClick={handleExportExcel}
+            onClick={() => handleExportExcel()}
             loading={excelGenerating}
             icon={<TableProperties className="w-4 h-4 text-[#23285E]" />}
             disabled={filteredRecords.length === 0}
             className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold border-none"
           >
             Export Excel (.xlsx)
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => handleExportPDF()}
+            loading={pdfGenerating}
+            icon={<FileText className="w-4 h-4 text-rose-600" />}
+            disabled={filteredRecords.length === 0}
+            className="bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 font-bold"
+          >
+            Export PDF
           </Button>
           <Button
             variant="primary"
@@ -909,6 +993,17 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
         onReset={handleResetColumns}
         title="Customize Attendance Columns"
         subtitle="Manage which fields are shown in the attendance table and downloaded reports."
+      />
+
+      {/* Export Titles & Report Headers Modal */}
+      <ExportTitlesModal
+        isOpen={isTitlesModalOpen}
+        onClose={() => setIsTitlesModalOpen(false)}
+        showPdfExport={false}
+        onExportExcel={(titles) => handleExportExcel(titles)}
+        onSave={() => {
+          toast.success('Report Titles Saved', 'Custom titles will be used for all future Excel (.xlsx) and CSV exports.');
+        }}
       />
     </div>
   );

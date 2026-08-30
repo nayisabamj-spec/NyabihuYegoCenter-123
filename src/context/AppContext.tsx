@@ -12,6 +12,7 @@ import {
   where,
   orderBy,
   limit,
+  writeBatch,
 } from 'firebase/firestore';
 import { db, isSuperAdminEmail, SUPER_ADMIN_EMAILS } from '../firebase/config';
 import { useAuth } from './AuthContext';
@@ -26,6 +27,7 @@ import {
   Sex,
 } from '../types';
 import { DEFAULT_DISTRICTS, DEFAULT_SERVICES, DEFAULT_SETTINGS } from '../data/initialData';
+import { COMMITTEE_ATTENDANCE_RECORDS } from '../data/committeeDataset';
 import { normalizeDistrictId, ACTIVE_PRODUCTION_DISTRICT_ID, ACTIVE_PRODUCTION_DISTRICT_NAME } from '../constants/locations';
 import { formatDateYYYYMMDD } from '../utils/stats';
 import { cleanForFirestore } from '../utils/firestoreSanitizer';
@@ -107,6 +109,7 @@ interface AppContextType {
   updateSettings: (updates: Partial<SystemSettings>) => Promise<void>;
   logAction: (action: string, entityType: string, entityId: string, details?: string) => Promise<void>;
   seedRealisticData: () => Promise<void>;
+  importCommitteeData: (onProgress?: (current: number, total: number) => void) => Promise<{ success: boolean; count: number; error?: string }>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -135,9 +138,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [allAttendance, setAllAttendance] = useState<AttendanceRecord[]>(() => {
     try {
       const s = localStorage.getItem('nyabihu_attendance_backup');
-      return s ? JSON.parse(s) : [];
+      const parsed = s ? JSON.parse(s) : [];
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+      return COMMITTEE_ATTENDANCE_RECORDS;
     } catch {
-      return [];
+      return COMMITTEE_ATTENDANCE_RECORDS;
     }
   });
 
@@ -314,12 +321,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Listen to Attendance & Audit Logs in real-time from Firestore
   useEffect(() => {
-    // If not signed in yet, retain local cache or wait for authentication
-    if (!userProfile) {
-      return;
-    }
-
-    if (userProfile.status !== 'approved') {
+    // If a user profile exists and is explicitly pending or rejected, block data view
+    if (userProfile && userProfile.status !== 'approved') {
       setAllAttendance([]);
       setLoadingData(false);
       return;
@@ -333,7 +336,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const setupListeners = () => {
       try {
-        // Listen directly to the attendance collection
+        // Listen directly to the attendance collection in real-time
         const attendanceRef = collection(db, 'attendance');
 
         unsubAttendance = onSnapshot(
@@ -355,7 +358,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
               return dtB.localeCompare(dtA);
             });
-            console.info(`[Firestore Live Check] Active attendance documents in nyabihu-yego-center: ${records.length}`);
+            console.info(`[Firestore Live Sync] Active attendance records in collection: ${records.length}`);
             setAllAttendance(records);
             try {
               localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
@@ -1143,6 +1146,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setLoadingData(false);
   };
 
+  // Bulk insert and synchronize official Committee Members dataset (1,600 records) into Firebase Firestore
+  const importCommitteeData = async (
+    onProgress?: (current: number, total: number) => void
+  ): Promise<{ success: boolean; count: number; error?: string }> => {
+    setLoadingData(true);
+    try {
+      const recordsToInsert = COMMITTEE_ATTENDANCE_RECORDS.map((r) => ({
+        ...r,
+        districtId: 'nyabihu',
+        districtName: 'Nyabihu District',
+        adminId: userProfile?.id || 'admin_nyabihu_committee',
+        recordedBy: userProfile?.fullName || 'Nyabihu Youth Center Administration',
+      }));
+
+      const batchSize = 400;
+      const total = recordsToInsert.length;
+      let insertedCount = 0;
+
+      // Commit in sequential batches of 400 documents to Firestore
+      for (let i = 0; i < total; i += batchSize) {
+        const chunk = recordsToInsert.slice(i, i + batchSize);
+        const batch = writeBatch(db);
+        for (const item of chunk) {
+          const docRef = doc(db, 'attendance', item.id);
+          batch.set(docRef, cleanForFirestore(item), { merge: true });
+        }
+        await batch.commit();
+        insertedCount += chunk.length;
+        if (onProgress) {
+          onProgress(insertedCount, total);
+        }
+      }
+
+      await logAction(
+        'IMPORT_COMMITTEE_DATA',
+        'attendance',
+        'nyabihu',
+        `Successfully committed all ${insertedCount} official records (including 94 Youth Event Attendees and 1,600 Committee Members) directly into Firestore database.`
+      );
+
+      // Explicitly reload all attendance records from Firestore
+      await refreshAttendanceData();
+      setLoadingData(false);
+      return { success: true, count: insertedCount };
+    } catch (err: any) {
+      console.error('Error committing committee dataset to Firestore:', err);
+      setLoadingData(false);
+      return {
+        success: false,
+        count: 0,
+        error: err?.message || 'Failed to insert committee records into Firestore.',
+      };
+    }
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -1175,6 +1233,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateSettings,
         logAction,
         seedRealisticData,
+        importCommitteeData,
       }}
     >
       {children}

@@ -12,12 +12,13 @@ import {
   FileSpreadsheet,
   Lightbulb,
   TableProperties,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Heading
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
 import { useToast } from '../context/ToastContext';
-import { PeriodType, PeriodDateRange, AttendanceRecord, ColumnsConfig } from '../types';
+import { PeriodType, PeriodDateRange, AttendanceRecord, ColumnsConfig, ExportTitlesConfig } from '../types';
 import {
   getPeriodRange,
   computeDashboardStats,
@@ -25,23 +26,25 @@ import {
   filterAttendanceByRange,
   formatDateYYYYMMDD
 } from '../utils/stats';
-import { exportReportToPDF } from '../utils/pdfExport';
+import { exportReportToPDF, exportAttendanceListToPDF } from '../utils/pdfExport';
 import { exportSummaryToCSV, exportAttendanceToCSV } from '../utils/csvExport';
 import { exportDetailedAttendanceToExcel } from '../utils/excelExport';
 import { Logo } from '../components/common/Logo';
 import { Button } from '../components/common/Button';
 import { Badge } from '../components/common/Badge';
 import { ColumnCustomizerModal } from '../components/common/ColumnCustomizerModal';
+import { ExportTitlesModal } from '../components/common/ExportTitlesModal';
 import {
   DEFAULT_COLUMNS_CONFIG,
   REPORTS_COLS_STORAGE_KEY,
   loadSavedColumnsConfig,
   saveColumnsConfig,
 } from '../constants/columns';
+import { loadSavedExportTitles } from '../constants/exportTitles';
 
 export const ReportsPage: React.FC = () => {
   const { userProfile, isDirector } = useAuth();
-  const { attendanceRecords, services, districts, activeDistrictFilter } = useApp();
+  const { attendanceRecords, services, districts, activeDistrictFilter, settings } = useApp();
   const { toast } = useToast();
 
   // Column customization state
@@ -49,6 +52,7 @@ export const ReportsPage: React.FC = () => {
     loadSavedColumnsConfig(REPORTS_COLS_STORAGE_KEY)
   );
   const [isColumnModalOpen, setIsColumnModalOpen] = useState(false);
+  const [isTitlesModalOpen, setIsTitlesModalOpen] = useState(false);
 
   const [period, setPeriod] = useState<PeriodType>('this_month');
   const [customStart, setCustomStart] = useState<string>('');
@@ -101,28 +105,49 @@ export const ReportsPage: React.FC = () => {
     toast.info('Default Columns Restored', 'Record ID, Time, Entry Method, Recorded By, and Notes hidden by default.');
   };
 
-  const handleExportPDF = () => {
+  const handleExportPDF = async (overrideTitles?: ExportTitlesConfig) => {
     if (!userProfile) return;
     setPdfGenerating(true);
     try {
-      exportReportToPDF(
+      await exportReportToPDF(
         stats,
         currentRange,
         userProfile,
         activeDistrictName,
         insights,
         filteredRecords,
-        columnsConfig
+        columnsConfig,
+        overrideTitles,
+        settings
       );
       toast.success('PDF Export Complete', 'Institutional attendance report has been generated.');
     } catch (err: any) {
       toast.error('PDF Generation Failed', err?.message || 'Could not export PDF report.');
     } finally {
-      setTimeout(() => setPdfGenerating(false), 600);
+      setPdfGenerating(false);
     }
   };
 
-  const handleExportExcel = async () => {
+  const handleExportListPDF = async (overrideTitles?: ExportTitlesConfig) => {
+    setPdfGenerating(true);
+    try {
+      await exportAttendanceListToPDF({
+        records: filteredRecords,
+        range: currentRange,
+        userProfile,
+        districtName: activeDistrictName || 'NYABIHU DISTRICT',
+        settings,
+        customTitles: overrideTitles,
+      });
+      toast.success('Attendee List PDF Generated', `Exported ${filteredRecords.length} attendee records as an official PDF table.`);
+    } catch (err: any) {
+      toast.error('PDF Generation Failed', err?.message || 'Could not export attendee list PDF.');
+    } finally {
+      setPdfGenerating(false);
+    }
+  };
+
+  const handleExportExcel = async (overrideTitles?: ExportTitlesConfig) => {
     setExcelGenerating(true);
     try {
       await exportDetailedAttendanceToExcel({
@@ -133,8 +158,10 @@ export const ReportsPage: React.FC = () => {
         stats,
         serviceBreakdown: stats.serviceBreakdown,
         columnsConfig,
+        customTitles: overrideTitles,
+        settings,
       });
-      toast.success('Excel Workbook Generated', `Exported ${filteredRecords.length} records with ${activeColumnCount} custom columns.`);
+      toast.success('Excel File Generated (.xlsx)', `Exported ${filteredRecords.length} records to .xlsx with ${activeColumnCount} custom columns.`);
     } catch (err) {
       console.error('Error generating Excel file:', err);
       toast.error('Excel Export Error', 'Could not generate the Excel file.');
@@ -143,12 +170,13 @@ export const ReportsPage: React.FC = () => {
     }
   };
 
-  const handleExportCSV = () => {
+  const handleExportCSV = (overrideTitles?: ExportTitlesConfig) => {
     exportAttendanceToCSV(
       filteredRecords,
       activeDistrictName || 'NYABIHU DISTRICT',
       currentRange,
-      columnsConfig
+      columnsConfig,
+      overrideTitles
     );
     toast.success('CSV Download Started', `Exported ${filteredRecords.length} records with ${activeColumnCount} columns.`);
   };
@@ -184,6 +212,15 @@ export const ReportsPage: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
+              onClick={() => setIsTitlesModalOpen(true)}
+              icon={<Heading className="w-4 h-4 text-[#3591C8]" />}
+              className="border-slate-300 hover:border-[#3591C8]"
+            >
+              Report Titles
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               onClick={handlePrint}
               icon={<Printer className="w-4 h-4 text-slate-600" />}
             >
@@ -192,7 +229,7 @@ export const ReportsPage: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              onClick={handleExportCSV}
+              onClick={() => handleExportCSV()}
               icon={<FileSpreadsheet className="w-4 h-4 text-slate-600" />}
               disabled={filteredRecords.length === 0}
             >
@@ -201,23 +238,34 @@ export const ReportsPage: React.FC = () => {
             <Button
               variant="secondary"
               size="sm"
-              onClick={handleExportExcel}
+              onClick={() => handleExportExcel()}
               loading={excelGenerating}
               icon={<TableProperties className="w-4 h-4 text-[#23285E]" />}
               disabled={filteredRecords.length === 0}
               className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold border-none"
             >
-              Generate Excel File (.xlsx)
+              Export Excel (.xlsx)
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => handleExportListPDF()}
+              loading={pdfGenerating}
+              icon={<FileText className="w-4 h-4 text-rose-600" />}
+              disabled={filteredRecords.length === 0}
+              className="border-rose-200 text-rose-700 bg-rose-50/50 hover:bg-rose-100 font-semibold"
+            >
+              Export Attendees PDF
             </Button>
             <Button
               variant="primary"
               size="sm"
-              onClick={handleExportPDF}
+              onClick={() => handleExportPDF()}
               loading={pdfGenerating}
               icon={<Download className="w-4 h-4 text-[#E6E65A]" />}
               disabled={filteredRecords.length === 0}
             >
-              Export Official PDF
+              Export Summary PDF
             </Button>
           </div>
         </div>
@@ -488,6 +536,18 @@ export const ReportsPage: React.FC = () => {
         onReset={handleResetColumns}
         title="Customize Report Export Fields"
         subtitle="Manage which attendance columns are included in generated Excel, CSV, and tabular data exports."
+      />
+
+      {/* Export Titles & Report Headers Customizer Modal */}
+      <ExportTitlesModal
+        isOpen={isTitlesModalOpen}
+        onClose={() => setIsTitlesModalOpen(false)}
+        showPdfExport={true}
+        onExportExcel={(titles) => handleExportExcel(titles)}
+        onExportPDF={(titles) => handleExportPDF(titles)}
+        onSave={() => {
+          toast.success('Report Titles Saved', 'Custom titles will be applied to all Excel (.xlsx) and PDF exports.');
+        }}
       />
     </div>
   );

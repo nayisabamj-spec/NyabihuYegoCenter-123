@@ -20,7 +20,8 @@ import {
   Layers,
   Sparkles,
   Shield,
-  Crown
+  Crown,
+  Download
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
@@ -31,6 +32,7 @@ import { Badge } from '../components/common/Badge';
 import { Button } from '../components/common/Button';
 import { Modal } from '../components/common/Modal';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
+import { ExcelExportSettingsSection } from '../components/admin/ExcelExportSettingsSection';
 
 export const AdminManagementPage: React.FC = () => {
   const { userProfile, isDirector } = useAuth();
@@ -46,6 +48,8 @@ export const AdminManagementPage: React.FC = () => {
     updateDistrict,
     deleteDistrict,
     updateSettings,
+    importCommitteeData,
+    seedRealisticData,
   } = useApp();
   const { toast } = useToast();
 
@@ -85,6 +89,8 @@ export const AdminManagementPage: React.FC = () => {
   const [contactPhone, setContactPhone] = useState(settings.contactPhone);
   const [address, setAddress] = useState(settings.address);
   const [settingsSaved, setSettingsSaved] = useState(false);
+  const [importingCommittee, setImportingCommittee] = useState(false);
+  const [seedingRealistic, setSeedingRealistic] = useState(false);
 
   React.useEffect(() => {
     setCenterName(settings.centerName);
@@ -253,8 +259,12 @@ export const AdminManagementPage: React.FC = () => {
     }
   };
 
+  const [savingCenterSettings, setSavingCenterSettings] = useState(false);
+  const [savingExcelSettings, setSavingExcelSettings] = useState(false);
+
   const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
+    setSavingCenterSettings(true);
     try {
       await updateSettings({
         centerName,
@@ -264,10 +274,71 @@ export const AdminManagementPage: React.FC = () => {
         address,
       });
       setSettingsSaved(true);
-      toast.success('Center Settings Saved', 'Platform branding and contact information updated.');
+      toast.success('Center Settings Saved', 'Platform branding and contact information updated in database.');
       setTimeout(() => setSettingsSaved(false), 3000);
     } catch (err: any) {
       toast.error('Settings Error', err?.message || 'Could not save center settings');
+    } finally {
+      setSavingCenterSettings(false);
+    }
+  };
+
+  const handleSaveExcelExportSettings = async (updates: {
+    logoUrl?: string;
+    includeLogoInExcel?: boolean;
+    includeLogoInPdf?: boolean;
+    excelHeaderAccentColor: string;
+    excelSecondaryColor: string;
+    excelYellowAccentColor: string;
+    excelHeaderTextColor: string;
+    excelSubtitle: string;
+    excelExportColumns: string[];
+    excelColumnOrder: string[];
+    includeServiceBreakdownSheet?: boolean;
+    includeSectorBreakdownSheet?: boolean;
+  }) => {
+    setSavingExcelSettings(true);
+    try {
+      await updateSettings({
+        ...updates,
+      });
+      toast.success('Export Settings Stored', 'Spreadsheet and PDF export branding and column sequence saved to Firestore.');
+    } catch (err: any) {
+      toast.error('Export Settings Error', err?.message || 'Could not save export configuration');
+      throw err;
+    } finally {
+      setSavingExcelSettings(false);
+    }
+  };
+
+  const handleImportCommittee = async () => {
+    setImportingCommittee(true);
+    try {
+      const res = await importCommitteeData();
+      if (res.success) {
+        toast.success(
+          '1,600 Committee Records Loaded',
+          'Successfully populated all official committee members with corrected Mulinga sectors and randomized historical dates (2-4 months ago).'
+        );
+      } else {
+        toast.error('Import Failed', res.error || 'Could not import records');
+      }
+    } catch (e: any) {
+      toast.error('Import Error', e?.message || 'Error occurred during import');
+    } finally {
+      setImportingCommittee(false);
+    }
+  };
+
+  const handleSeedData = async () => {
+    setSeedingRealistic(true);
+    try {
+      await seedRealisticData();
+      toast.success('Sample Data Seeded', 'Generated statistical attendance records across all services.');
+    } catch (e: any) {
+      toast.error('Seeding Error', e?.message || 'Could not seed data');
+    } finally {
+      setSeedingRealistic(false);
     }
   };
 
@@ -657,7 +728,7 @@ export const AdminManagementPage: React.FC = () => {
 
       {/* Tab 5: Settings */}
       {activeTab === 'settings' && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs max-w-2xl space-y-4">
+        <div className="bg-white rounded-2xl border border-slate-200 p-6 sm:p-8 shadow-xs max-w-3xl space-y-4">
           <div>
             <h3 className="text-base font-bold text-[#23285E]">Center Settings & Branding</h3>
             <p className="text-xs text-slate-500">
@@ -667,7 +738,7 @@ export const AdminManagementPage: React.FC = () => {
 
           {settingsSaved && (
             <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-bold">
-              Settings updated successfully!
+              Center identification settings saved to database successfully!
             </div>
           )}
 
@@ -725,12 +796,70 @@ export const AdminManagementPage: React.FC = () => {
               />
             </div>
 
-            <div className="pt-3">
-              <Button type="submit" variant="primary" size="md">
-                Save Center Settings
+            <div className="pt-2">
+              <Button type="submit" variant="primary" size="md" loading={savingCenterSettings}>
+                Save Center Identification
               </Button>
             </div>
           </form>
+
+          {/* Excel Export Branding, Accent Color, and Column Visibility Section */}
+          <ExcelExportSettingsSection
+            settings={settings}
+            centerName={centerName}
+            onSave={handleSaveExcelExportSettings}
+            saving={savingExcelSettings}
+          />
+
+          {/* Bulk Dataset Operations */}
+          <div className="pt-6 mt-6 border-t border-slate-200 space-y-3">
+            <div>
+              <h4 className="text-sm font-bold text-[#23285E]">Database & Historical Records Operations</h4>
+              <p className="text-xs text-slate-500">
+                Bulk import and seed datasets with sanitized sector names (Mulinga) and historical dates.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+              <div className="p-4 rounded-xl border border-purple-200 bg-purple-50/50 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Download className="w-4 h-4 text-purple-700" />
+                  <span className="text-xs font-bold text-purple-900">Sync 1,694 Official Records to Firestore</span>
+                </div>
+                <p className="text-[11px] text-purple-700 leading-snug">
+                  Commit and synchronize all 1,694 verified records (including 94 Youth Event Attendees + 1,600 Committee Members) directly into the Firebase Firestore database.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleImportCommittee}
+                  loading={importingCommittee}
+                  className="w-full border-purple-300 text-purple-800 bg-white hover:bg-purple-100 font-bold"
+                >
+                  Commit 1,694 Records to Firestore
+                </Button>
+              </div>
+
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[#3591C8]" />
+                  <span className="text-xs font-bold text-[#23285E]">Seed Realistic Data</span>
+                </div>
+                <p className="text-[11px] text-slate-600 leading-snug">
+                  Generate sample historical attendance records across all 9 Youth Center services for testing and analytics.
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSeedData}
+                  loading={seedingRealistic}
+                  className="w-full border-slate-300 text-slate-700 bg-white hover:bg-slate-100"
+                >
+                  Seed Realistic Data
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
