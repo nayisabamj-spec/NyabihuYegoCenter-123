@@ -61,6 +61,9 @@ export interface AttendanceRecord {
   email?: string;
   nationalId?: string; // 16 digits
   isSelfCheckIn?: boolean;
+  isBulkGenerated?: boolean;
+  isLocalOnly?: boolean;
+  importSource?: 'excel_file' | 'clipboard_paste';
   notes?: string;
   createdAt: string;
   updatedAt: string;
@@ -116,6 +119,8 @@ export type PeriodType =
   | 'last_4_months'
   | 'this_year'
   | 'last_year'
+  | 'fiscal_year'
+  | 'all_time'
   | 'custom';
 
 export interface PeriodDateRange {

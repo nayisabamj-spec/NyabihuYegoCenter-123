@@ -126,13 +126,14 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({ onNavigate }) => {
 
         <div className="flex flex-wrap items-center gap-1.5">
           {[
-            { id: 'today', label: 'Today' },
-            { id: 'this_week', label: 'This Week' },
+            { id: 'all_time', label: 'All Time' },
+            { id: 'this_year', label: 'This Year' },
+            { id: 'last_year', label: 'Last Year' },
             { id: 'this_month', label: 'This Month' },
             { id: 'last_month', label: 'Last Month' },
-            { id: 'last_3_months', label: 'Last 3 Months' },
             { id: 'last_4_months', label: 'Last 4 Months' },
-            { id: 'this_year', label: 'This Year' },
+            { id: 'this_week', label: 'This Week' },
+            { id: 'today', label: 'Today' },
             { id: 'custom', label: 'Custom' },
           ].map((item) => (
             <button

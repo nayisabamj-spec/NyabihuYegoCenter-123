@@ -135,6 +135,31 @@ export function getPeriodRange(period: PeriodType, customStart?: string, customE
       };
     }
 
+    case 'fiscal_year': {
+      // Rwanda Fiscal Year runs from July 1 to June 30
+      const currentYear = now.getFullYear();
+      const isPostJuly = now.getMonth() >= 6; // Month is 0-indexed (6 = July)
+      const fyStartYear = isPostJuly ? currentYear : currentYear - 1;
+      const fyEndYear = fyStartYear + 1;
+      const start = new Date(fyStartYear, 6, 1); // July 1
+      const end = new Date(fyEndYear, 5, 30); // June 30
+      return {
+        startDate: formatDateYYYYMMDD(start),
+        endDate: formatDateYYYYMMDD(end),
+        label: `Fiscal Year ${fyStartYear}–${fyEndYear}`,
+        periodType: 'fiscal_year',
+      };
+    }
+
+    case 'all_time': {
+      return {
+        startDate: '2024-01-01',
+        endDate: '2030-12-31',
+        label: 'All Time (Full Database)',
+        periodType: 'all_time',
+      };
+    }
+
     case 'custom': {
       const s = customStart || todayStr;
       const e = customEnd || todayStr;
@@ -149,6 +174,9 @@ export function getPeriodRange(period: PeriodType, customStart?: string, customE
 }
 
 export function getPreviousPeriodRange(range: PeriodDateRange): { startDate: string; endDate: string } {
+  if (range.periodType === 'all_time') {
+    return { startDate: '2020-01-01', endDate: '2023-12-31' };
+  }
   const start = parseDate(range.startDate);
   const end = parseDate(range.endDate);
   const diffDays = Math.max(1, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1);

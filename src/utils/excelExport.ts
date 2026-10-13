@@ -21,6 +21,8 @@ import {
   DEFAULT_EXCEL_SUBTITLE,
   ExcelColumnDefinition,
 } from '../constants/excelExportSettings';
+import { NYABIHU_SECTORS } from '../constants/locations';
+import { DEFAULT_SERVICES } from '../data/initialData';
 import { getOfficialLogoBase64 } from './logoLoader';
 
 interface ExportExcelOptions {
@@ -95,10 +97,118 @@ export async function exportDetailedAttendanceToExcel({
     ? 'NYABIHU DISTRICT'
     : districtName.toUpperCase();
 
+  // 2. Compute All Summary Statistics Deterministically from Database Records
+  const totalCount = records.length;
   const maleCount = records.filter((r) => r.sex === 'Male').length;
   const femaleCount = records.filter((r) => r.sex === 'Female').length;
+  const malePct = totalCount > 0 ? ((maleCount / totalCount) * 100).toFixed(1) : '0.0';
+  const femalePct = totalCount > 0 ? ((femaleCount / totalCount) * 100).toFixed(1) : '0.0';
 
-  // 2. Resolve Active Ordered Columns dynamically
+  // Compute daily average
+  const sDate = new Date(range.startDate);
+  const eDate = new Date(range.endDate);
+  const totalDays = Math.max(1, Math.round((eDate.getTime() - sDate.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+  const dailyAverage = totalCount > 0 ? (totalCount / totalDays).toFixed(1) : '0.0';
+
+  // Build Comprehensive Service Breakdown
+  const serviceStatsMap = new Map<string, { male: number; female: number; total: number; name: string }>();
+
+  DEFAULT_SERVICES.forEach((s) => {
+    serviceStatsMap.set(s.id, {
+      male: 0,
+      female: 0,
+      total: 0,
+      name: s.name,
+    });
+  });
+
+  records.forEach((rec) => {
+    // Match by serviceId or service name
+    let sKey = rec.serviceId;
+    if (!serviceStatsMap.has(sKey)) {
+      const matchByName = Array.from(serviceStatsMap.entries()).find(
+        ([, v]) => v.name.toLowerCase() === (rec.serviceNameSnapshot || '').toLowerCase()
+      );
+      if (matchByName) {
+        sKey = matchByName[0];
+      } else {
+        serviceStatsMap.set(sKey, {
+          male: 0,
+          female: 0,
+          total: 0,
+          name: rec.serviceNameSnapshot || rec.serviceId,
+        });
+      }
+    }
+
+    const item = serviceStatsMap.get(sKey)!;
+    if (rec.sex === 'Male') item.male += 1;
+    if (rec.sex === 'Female') item.female += 1;
+    item.total += 1;
+    serviceStatsMap.set(sKey, item);
+  });
+
+  const computedServiceBreakdown = Array.from(serviceStatsMap.entries()).map(([sId, data]) => {
+    const pct = totalCount > 0 ? Number(((data.total / totalCount) * 100).toFixed(1)) : 0;
+    return {
+      serviceId: sId,
+      serviceName: data.name,
+      maleCount: data.male,
+      femaleCount: data.female,
+      totalCount: data.total,
+      percentage: pct,
+    };
+  });
+
+  // Sort services by highest total
+  computedServiceBreakdown.sort((a, b) => b.totalCount - a.totalCount);
+  const effectiveBreakdown = serviceBreakdown && serviceBreakdown.length > 0
+    ? serviceBreakdown
+    : (stats?.serviceBreakdown && stats.serviceBreakdown.length > 0 ? stats.serviceBreakdown : computedServiceBreakdown);
+
+  // Build Comprehensive Sector Breakdown (All 12 Sectors of Nyabihu)
+  const sectorList = [...NYABIHU_SECTORS, 'Other / Outside District'] as string[];
+  const computedSectorBreakdown = sectorList.map((sec) => {
+    const isOther = sec.startsWith('Other');
+    const secRecords = records.filter((r) => {
+      const s = (r.sector || 'Mukamira').trim();
+      if (isOther) {
+        return !NYABIHU_SECTORS.some((ns) => ns.toLowerCase() === s.toLowerCase());
+      }
+      return s.toLowerCase() === sec.toLowerCase();
+    });
+
+    const m = secRecords.filter((r) => r.sex === 'Male').length;
+    const f = secRecords.filter((r) => r.sex === 'Female').length;
+    const tot = secRecords.length;
+    const pct = totalCount > 0 ? ((tot / totalCount) * 100).toFixed(1) : '0.0';
+    return { sector: sec, male: m, female: f, total: tot, percentage: pct };
+  }).filter((s) => s.total > 0 || ['Bigogwe', 'Jenda', 'Mukamira', 'Rambura'].includes(s.sector));
+
+  // Build Monthly Timeline Breakdown
+  const monthMap = new Map<string, { male: number; female: number; total: number }>();
+  records.forEach((r) => {
+    const ym = r.attendanceDate ? r.attendanceDate.substring(0, 7) : 'Unknown';
+    const entry = monthMap.get(ym) || { male: 0, female: 0, total: 0 };
+    if (r.sex === 'Male') entry.male += 1;
+    if (r.sex === 'Female') entry.female += 1;
+    entry.total += 1;
+    monthMap.set(ym, entry);
+  });
+
+  const sortedMonths = Array.from(monthMap.keys()).sort();
+  const monthlyTimeline = sortedMonths.map((ym) => {
+    const [y, m] = ym.split('-').map(Number);
+    const dateObj = new Date(y, m - 1, 1);
+    const label = !isNaN(dateObj.getTime())
+      ? dateObj.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' })
+      : ym;
+    const data = monthMap.get(ym)!;
+    const pct = totalCount > 0 ? ((data.total / totalCount) * 100).toFixed(1) : '0.0';
+    return { ym, label, ...data, percentage: pct };
+  });
+
+  // 3. Resolve Active Ordered Columns for the Attendance Register sheet
   let activeCols: ExcelColumnDefinition[] = [];
 
   if (Array.isArray(settings?.excelExportColumns) && settings.excelExportColumns.length > 0) {
@@ -110,7 +220,7 @@ export async function exportDetailedAttendanceToExcel({
       }
     });
 
-    // Ensure 'no' and 'personName' are strictly present
+    // Ensure 'no' and 'personName' are present
     if (!chosenCols.some((c) => c.key === 'no')) {
       const noCol = ALL_EXCEL_COLUMNS.find((c) => c.key === 'no')!;
       chosenCols.unshift(noCol);
@@ -128,7 +238,7 @@ export async function exportDetailedAttendanceToExcel({
     ).filter(Boolean);
   }
 
-  // 3. Initialize ExcelJS Workbook
+  // 4. Initialize ExcelJS Workbook
   const workbook = new ExcelJS.Workbook();
   workbook.creator = effectiveCenterName;
   workbook.lastModifiedBy = userProfile?.fullName || 'Administrator';
@@ -145,8 +255,16 @@ export async function exportDetailedAttendanceToExcel({
     }
   }
 
+  const generatedTimeStr = new Date().toLocaleString('en-GB', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
   // ==========================================
-  // SHEET 1: ATTENDANCE REGISTER
+  // SHEET 1: ATTENDANCE REGISTER (PRIMARY FIRST TAB)
   // ==========================================
   const sheet1Name = (titles.attendanceSheetTitle || 'Attendance Register').substring(0, 31);
   const wsRegister = workbook.addWorksheet(sheet1Name, {
@@ -162,10 +280,10 @@ export async function exportDetailedAttendanceToExcel({
     wsRegister.getColumn(index + 1).width = Math.max(col.width, 10);
   });
 
-  // Row 1: Spacer / Logo margin
+  // Row 1: Spacer
   wsRegister.getRow(1).height = 10;
 
-  // Row 2: Main Brand Title Banner (Navy Blue with Bold White text)
+  // Row 2: Main Brand Title Banner
   const titleRow = wsRegister.getRow(2);
   titleRow.height = 42;
   wsRegister.mergeCells(`A2:${lastColLetter}2`);
@@ -179,19 +297,18 @@ export async function exportDetailedAttendanceToExcel({
   };
   titleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: shouldIncludeLogo && logoAsset ? 7 : 1 };
 
-  // Row 3: Accent Yellow Brand Line (#E6E65A)
+  // Row 3: Accent Yellow Brand Line
   const yellowRow = wsRegister.getRow(3);
   yellowRow.height = 5;
   wsRegister.mergeCells(`A3:${lastColLetter}3`);
   const yellowCell = wsRegister.getCell('A3');
-  yellowCell.value = '';
   yellowCell.fill = {
     type: 'pattern',
     pattern: 'solid',
     fgColor: { argb: yellowAccentArgb },
   };
 
-  // Row 4: Subtitle & Location Banner (Light Slate with Navy text)
+  // Row 4: Subtitle & Location Banner
   const subRow = wsRegister.getRow(4);
   subRow.height = 22;
   wsRegister.mergeCells(`A4:${lastColLetter}4`);
@@ -205,19 +322,12 @@ export async function exportDetailedAttendanceToExcel({
   };
   subCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
 
-  // Row 5: Metadata Info Bar (Reporting period & totals)
+  // Row 5: Metadata Info Bar
   const metaRow = wsRegister.getRow(5);
   metaRow.height = 20;
   wsRegister.mergeCells(`A5:${lastColLetter}5`);
   const metaCell = wsRegister.getCell('A5');
-  const generatedTimeStr = new Date().toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-  metaCell.value = `  Period: ${range.label} (${range.startDate} to ${range.endDate})   •   Total: ${records.length} visitors (Male: ${maleCount}  |  Female: ${femaleCount})   •   Exported: ${generatedTimeStr} by ${userProfile?.fullName || 'Administrator'}`;
+  metaCell.value = `  Period: ${range.label} (${range.startDate} to ${range.endDate})   •   Total: ${records.length.toLocaleString()} visitors (Male: ${maleCount.toLocaleString()}  |  Female: ${femaleCount.toLocaleString()})   •   Exported: ${generatedTimeStr} by ${userProfile?.fullName || 'Administrator'}`;
   metaCell.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF475569' } };
   metaCell.fill = {
     type: 'pattern',
@@ -229,7 +339,7 @@ export async function exportDetailedAttendanceToExcel({
     bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
   };
 
-  // Embed Logo Image if available
+  // Embed Logo Image on Sheet 1 (Attendance Register) if available
   if (shouldIncludeLogo && logoAsset) {
     try {
       const imageId = workbook.addImage({
@@ -272,7 +382,7 @@ export async function exportDetailedAttendanceToExcel({
     };
   });
 
-  // Rows 7+: Data Rows with alternating zebra row styling & formatted cells
+  // Rows 7+: Data Rows with alternating zebra row styling
   let currentRowIdx = 7;
   records.forEach((r, recordIdx) => {
     const dataRow = wsRegister.getRow(currentRowIdx);
@@ -342,12 +452,12 @@ export async function exportDetailedAttendanceToExcel({
           break;
         case 'phoneNumber':
           cell.value = r.phoneNumber || '—';
-          cell.numFmt = '@'; // Explicit text format to protect leading zero
+          cell.numFmt = '@';
           cell.alignment = { vertical: 'middle', horizontal: 'left' };
           break;
         case 'nationalId':
           cell.value = nationalIdFormatted;
-          cell.numFmt = '@'; // Explicit text format for 16 digits
+          cell.numFmt = '@';
           cell.alignment = { vertical: 'middle', horizontal: 'left' };
           cell.font = { name: 'Consolas', size: 9, color: { argb: 'FF334155' } };
           break;
@@ -359,22 +469,22 @@ export async function exportDetailedAttendanceToExcel({
     currentRowIdx++;
   });
 
-  // Bottom Summary / Sign-off Row
-  const totalRow = wsRegister.getRow(currentRowIdx);
-  totalRow.height = 24;
+  // Bottom Total Row for Attendance Register
+  const regTotalRow = wsRegister.getRow(currentRowIdx);
+  regTotalRow.height = 24;
   wsRegister.mergeCells(`A${currentRowIdx}:B${currentRowIdx}`);
-  const totalLabelCell = totalRow.getCell(1);
-  totalLabelCell.value = `TOTAL ATTENDEES: ${records.length}`;
-  totalLabelCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
-  totalLabelCell.fill = {
+  const regTotalLabel = regTotalRow.getCell(1);
+  regTotalLabel.value = `TOTAL ATTENDEES: ${records.length.toLocaleString()}`;
+  regTotalLabel.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+  regTotalLabel.fill = {
     type: 'pattern',
     pattern: 'solid',
-    fgColor: { argb: 'FFDFF8F5' }, // Soft Mint
+    fgColor: { argb: 'FFDFF8F5' },
   };
-  totalLabelCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  regTotalLabel.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
 
   for (let c = 3; c <= lastColNum; c++) {
-    const cCell = totalRow.getCell(c);
+    const cCell = regTotalRow.getCell(c);
     cCell.fill = {
       type: 'pattern',
       pattern: 'solid',
@@ -387,19 +497,429 @@ export async function exportDetailedAttendanceToExcel({
   }
 
   // ==========================================
-  // SHEET 2: SERVICE BREAKDOWN SUMMARY
+  // SHEET 2: EXECUTIVE & ANALYTICS SUMMARY (COMES AFTER ATTENDANCE REGISTER)
   // ==========================================
-  const effectiveBreakdown = serviceBreakdown || stats?.serviceBreakdown || [];
+  const wsExec = workbook.addWorksheet('Analytics Summary', {
+    views: [{ state: 'frozen', ySplit: 6 }],
+    properties: { defaultRowHeight: 20 },
+  });
+
+  // Set column widths for Sheet 2
+  wsExec.columns = [
+    { key: 'colA', width: 6 },
+    { key: 'colB', width: 36 },
+    { key: 'colC', width: 18 },
+    { key: 'colD', width: 18 },
+    { key: 'colE', width: 18 },
+    { key: 'colF', width: 16 },
+    { key: 'colG', width: 22 },
+  ];
+
+  // Row 1: Spacer
+  wsExec.getRow(1).height = 10;
+
+  // Row 2: Title Banner (Navy Blue with Bold White text)
+  const execTitleRow = wsExec.getRow(2);
+  execTitleRow.height = 42;
+  wsExec.mergeCells('A2:G2');
+  const execTitleCell = wsExec.getCell('A2');
+  execTitleCell.value = `   ${effectiveCenterName.toUpperCase()} — EXECUTIVE & ANALYTICS SUMMARY`;
+  execTitleCell.font = { name: 'Calibri', size: 14, bold: true, color: { argb: headerTextArgb } };
+  execTitleCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: headerBgArgb },
+  };
+  execTitleCell.alignment = { vertical: 'middle', horizontal: 'left', indent: shouldIncludeLogo && logoAsset ? 7 : 1 };
+
+  // Row 3: Accent Yellow Brand Line (#E6E65A)
+  const execYellowRow = wsExec.getRow(3);
+  execYellowRow.height = 5;
+  wsExec.mergeCells('A3:G3');
+  const execYellowCell = wsExec.getCell('A3');
+  execYellowCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: yellowAccentArgb },
+  };
+
+  // Row 4: Subtitle & Location Banner
+  const execSubRow = wsExec.getRow(4);
+  execSubRow.height = 22;
+  wsExec.mergeCells('A4:G4');
+  const execSubCell = wsExec.getCell('A4');
+  execSubCell.value = `  Location: ${formattedDistrict}  |  ${effectiveSubtitle}`;
+  execSubCell.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+  execSubCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFF1F5F9' },
+  };
+  execSubCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+
+  // Row 5: Metadata Info Bar
+  const execMetaRow = wsExec.getRow(5);
+  execMetaRow.height = 22;
+  wsExec.mergeCells('A5:G5');
+  const execMetaCell = wsExec.getCell('A5');
+  execMetaCell.value = `  Reporting Scope: ${range.label} (${range.startDate} to ${range.endDate})   •   Total Verified Attendees: ${totalCount.toLocaleString()}   •   Exported: ${generatedTimeStr} by ${userProfile?.fullName || 'Administrator'}`;
+  execMetaCell.font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF475569' } };
+  execMetaCell.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb: 'FFFFFFFF' },
+  };
+  execMetaCell.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+  execMetaCell.border = {
+    bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } },
+  };
+
+  // Embed Logo Image on Sheet 2 if available
+  if (shouldIncludeLogo && logoAsset) {
+    try {
+      const imageId = workbook.addImage({
+        base64: logoAsset.base64,
+        extension: logoAsset.extension,
+      });
+
+      wsExec.addImage(imageId, {
+        tl: { col: 0.15, row: 1.15 },
+        ext: { width: 44, height: 44 },
+        editAs: 'oneCell',
+      });
+    } catch (e) {
+      console.warn('Could not insert logo image into Excel:', e);
+    }
+  }
+
+  // Row 6: Spacer
+  wsExec.getRow(6).height = 12;
+
+  // Row 7-11: EXECUTIVE KPI SUMMARY DASHBOARD BLOCK
+  wsExec.mergeCells('A7:G7');
+  const kpiSectionHead = wsExec.getCell('A7');
+  kpiSectionHead.value = '  EXECUTIVE KEY PERFORMANCE INDICATORS (IMIBUSHO RUSANGE)';
+  kpiSectionHead.font = { name: 'Calibri', size: 10.5, bold: true, color: { argb: headerBgArgb } };
+  kpiSectionHead.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE2E8F0' } };
+  kpiSectionHead.alignment = { vertical: 'middle', horizontal: 'left' };
+  wsExec.getRow(7).height = 24;
+
+  // KPI Row 1 (Rows 8-9)
+  const kpiCards = [
+    { label: 'TOTAL VISITS RECORDED', val: totalCount.toLocaleString(), sub: `${dailyAverage} visits/day avg`, colStart: 1, colEnd: 2, bg: 'FFF8FAFC' },
+    { label: 'MALE VISITS (GABO)', val: `${maleCount.toLocaleString()} (${malePct}%)`, sub: 'Registered male youth', colStart: 3, colEnd: 4, bg: 'FFEFF6FF' },
+    { label: 'FEMALE VISITS (GORE)', val: `${femaleCount.toLocaleString()} (${femalePct}%)`, sub: 'Registered female youth', colStart: 5, colEnd: 6, bg: 'FFFDF2F8' },
+    { label: 'GENDER PARITY', val: `${femalePct}% F / ${malePct}% M`, sub: 'Parity balance index', colStart: 7, colEnd: 7, bg: 'FFF0FDF4' },
+  ];
+
+  kpiCards.forEach((c) => {
+    const rLabel = wsExec.getRow(8);
+    const rVal = wsExec.getRow(9);
+    rLabel.height = 18;
+    rVal.height = 26;
+
+    if (c.colStart !== c.colEnd) {
+      wsExec.mergeCells(8, c.colStart, 8, c.colEnd);
+      wsExec.mergeCells(9, c.colStart, 9, c.colEnd);
+    }
+
+    const cLabel = wsExec.getCell(8, c.colStart);
+    cLabel.value = `  ${c.label}`;
+    cLabel.font = { name: 'Calibri', size: 8.5, bold: true, color: { argb: 'FF64748B' } };
+    cLabel.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.bg } };
+    cLabel.alignment = { vertical: 'middle', horizontal: 'left' };
+
+    const cVal = wsExec.getCell(9, c.colStart);
+    cVal.value = `  ${c.val}  —  ${c.sub}`;
+    cVal.font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+    cVal.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: c.bg } };
+    cVal.alignment = { vertical: 'middle', horizontal: 'left' };
+
+    // Apply border to KPI card
+    for (let col = c.colStart; col <= c.colEnd; col++) {
+      wsExec.getCell(8, col).border = { top: { style: 'thin', color: { argb: 'FFCBD5E1' } }, left: { style: 'thin', color: { argb: 'FFCBD5E1' } }, right: { style: 'thin', color: { argb: 'FFCBD5E1' } } };
+      wsExec.getCell(9, col).border = { bottom: { style: 'medium', color: { argb: secondaryColorArgb } }, left: { style: 'thin', color: { argb: 'FFCBD5E1' } }, right: { style: 'thin', color: { argb: 'FFCBD5E1' } } };
+    }
+  });
+
+  // Row 10: Spacer
+  wsExec.getRow(10).height = 14;
+
+  // ==========================================
+  // SECTION 1: SERVICE UTILIZATION BREAKDOWN TABLE
+  // ==========================================
+  let execRowIdx = 11;
+  wsExec.mergeCells(`A${execRowIdx}:G${execRowIdx}`);
+  const srvSecHead = wsExec.getCell(`A${execRowIdx}`);
+  srvSecHead.value = '  1. SERVICE PROGRAM ATTENDANCE & UTILIZATION BREAKDOWN';
+  srvSecHead.font = { name: 'Calibri', size: 11, bold: true, color: { argb: headerTextArgb } };
+  srvSecHead.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerBgArgb } };
+  srvSecHead.alignment = { vertical: 'middle', horizontal: 'left' };
+  wsExec.getRow(execRowIdx).height = 26;
+  execRowIdx++;
+
+  // Service Table Headers
+  const srvHeaders = ['No.', 'Service Program Name', 'Male Visits', 'Female Visits', 'Total Visits', 'Share (%)', 'Demand Status'];
+  const srvHeadRow = wsExec.getRow(execRowIdx);
+  srvHeadRow.height = 24;
+  srvHeaders.forEach((h, i) => {
+    const cell = srvHeadRow.getCell(i + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerTextArgb } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: secondaryColorArgb } };
+    cell.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : (i >= 2 && i <= 5) ? 'right' : 'left' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF1E293B' } },
+      bottom: { style: 'medium', color: { argb: headerBgArgb } },
+    };
+  });
+  execRowIdx++;
+
+  const srvDataStartRow = execRowIdx;
+  effectiveBreakdown.forEach((s, idx) => {
+    const r = wsExec.getRow(execRowIdx);
+    r.height = 20;
+    const isEven = idx % 2 === 0;
+    const bg = isEven ? 'FFFFFFFF' : 'FFF8FAFC';
+
+    r.getCell(1).value = idx + 1;
+    r.getCell(1).alignment = { horizontal: 'center' };
+    r.getCell(2).value = s.serviceName;
+    r.getCell(2).font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
+    r.getCell(3).value = s.maleCount;
+    r.getCell(4).value = s.femaleCount;
+    r.getCell(5).value = s.totalCount;
+    r.getCell(5).font = { name: 'Calibri', size: 9.5, bold: true };
+    r.getCell(6).value = `${s.percentage}%`;
+
+    const statusStr = s.percentage >= 15 ? 'High Demand Program' : s.percentage >= 8 ? 'Active Program' : 'Steady Utilization';
+    r.getCell(7).value = statusStr;
+    r.getCell(7).font = { name: 'Calibri', size: 9, italic: true, color: { argb: s.percentage >= 15 ? 'FF1E40AF' : 'FF475569' } };
+
+    for (let c = 1; c <= 7; c++) {
+      r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+      r.getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+    }
+    execRowIdx++;
+  });
+  const srvDataEndRow = execRowIdx - 1;
+
+  // Service Total Row
+  const srvTotRow = wsExec.getRow(execRowIdx);
+  srvTotRow.height = 24;
+  srvTotRow.getCell(2).value = 'TOTAL ALL SERVICES';
+  srvTotRow.getCell(2).font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+  srvTotRow.getCell(3).value = { formula: `SUM(C${srvDataStartRow}:C${srvDataEndRow})`, result: maleCount };
+  srvTotRow.getCell(4).value = { formula: `SUM(D${srvDataStartRow}:D${srvDataEndRow})`, result: femaleCount };
+  srvTotRow.getCell(5).value = { formula: `SUM(E${srvDataStartRow}:E${srvDataEndRow})`, result: totalCount };
+  srvTotRow.getCell(5).font = { name: 'Calibri', size: 10, bold: true };
+  srvTotRow.getCell(6).value = '100.0%';
+  srvTotRow.getCell(7).value = `${effectiveBreakdown.length} Services Evaluated`;
+
+  for (let c = 1; c <= 7; c++) {
+    srvTotRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDFF8F5' } };
+    srvTotRow.getCell(c).border = {
+      top: { style: 'medium', color: { argb: secondaryColorArgb } },
+      bottom: { style: 'double', color: { argb: headerBgArgb } },
+    };
+  }
+  execRowIdx += 2;
+
+  // ==========================================
+  // SECTION 2: GEOGRAPHIC ATTENDANCE BY NYABIHU SECTOR
+  // ==========================================
+  wsExec.mergeCells(`A${execRowIdx}:G${execRowIdx}`);
+  const secSecHead = wsExec.getCell(`A${execRowIdx}`);
+  secSecHead.value = '  2. GEOGRAPHIC DISTRIBUTION ACROSS NYABIHU DISTRICT SECTORS (IMIRENGE)';
+  secSecHead.font = { name: 'Calibri', size: 11, bold: true, color: { argb: headerTextArgb } };
+  secSecHead.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerBgArgb } };
+  secSecHead.alignment = { vertical: 'middle', horizontal: 'left' };
+  wsExec.getRow(execRowIdx).height = 26;
+  execRowIdx++;
+
+  // Sector Table Headers
+  const secHeaders = ['No.', 'Sector Name (Umurenge)', 'Male Visitors', 'Female Visitors', 'Total Visitors', 'Share (%)', 'Coverage Reach'];
+  const secHeadRow = wsExec.getRow(execRowIdx);
+  secHeadRow.height = 24;
+  secHeaders.forEach((h, i) => {
+    const cell = secHeadRow.getCell(i + 1);
+    cell.value = h;
+    cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerTextArgb } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: secondaryColorArgb } };
+    cell.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : (i >= 2 && i <= 5) ? 'right' : 'left' };
+    cell.border = {
+      top: { style: 'thin', color: { argb: 'FF1E293B' } },
+      bottom: { style: 'medium', color: { argb: headerBgArgb } },
+    };
+  });
+  execRowIdx++;
+
+  const secDataStartRow = execRowIdx;
+  computedSectorBreakdown.forEach((sec, idx) => {
+    const r = wsExec.getRow(execRowIdx);
+    r.height = 20;
+    const isEven = idx % 2 === 0;
+    const bg = isEven ? 'FFFFFFFF' : 'FFF8FAFC';
+
+    r.getCell(1).value = idx + 1;
+    r.getCell(1).alignment = { horizontal: 'center' };
+    r.getCell(2).value = sec.sector;
+    r.getCell(2).font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
+    r.getCell(3).value = sec.male;
+    r.getCell(4).value = sec.female;
+    r.getCell(5).value = sec.total;
+    r.getCell(5).font = { name: 'Calibri', size: 9.5, bold: true };
+    r.getCell(6).value = `${sec.percentage}%`;
+    r.getCell(7).value = sec.total > 0 ? 'Active Participation' : 'Baseline';
+    r.getCell(7).font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF475569' } };
+
+    for (let c = 1; c <= 7; c++) {
+      r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+      r.getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+    }
+    execRowIdx++;
+  });
+  const secDataEndRow = execRowIdx - 1;
+
+  // Sector Total Row
+  const secTotRow = wsExec.getRow(execRowIdx);
+  secTotRow.height = 24;
+  secTotRow.getCell(2).value = 'TOTAL ALL SECTORS';
+  secTotRow.getCell(2).font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+  secTotRow.getCell(3).value = { formula: `SUM(C${secDataStartRow}:C${secDataEndRow})`, result: maleCount };
+  secTotRow.getCell(4).value = { formula: `SUM(D${secDataStartRow}:D${secDataEndRow})`, result: femaleCount };
+  secTotRow.getCell(5).value = { formula: `SUM(E${secDataStartRow}:E${secDataEndRow})`, result: totalCount };
+  secTotRow.getCell(5).font = { name: 'Calibri', size: 10, bold: true };
+  secTotRow.getCell(6).value = '100.0%';
+  secTotRow.getCell(7).value = `${computedSectorBreakdown.length} Sectors Profiled`;
+
+  for (let c = 1; c <= 7; c++) {
+    secTotRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDFF8F5' } };
+    secTotRow.getCell(c).border = {
+      top: { style: 'medium', color: { argb: secondaryColorArgb } },
+      bottom: { style: 'double', color: { argb: headerBgArgb } },
+    };
+  }
+  execRowIdx += 2;
+
+  // ==========================================
+  // SECTION 3: MONTHLY ATTENDANCE TIMELINE
+  // ==========================================
+  if (monthlyTimeline.length > 0) {
+    wsExec.mergeCells(`A${execRowIdx}:G${execRowIdx}`);
+    const monthSecHead = wsExec.getCell(`A${execRowIdx}`);
+    monthSecHead.value = '  3. MONTHLY ATTENDANCE & PARTICIPATION TIMELINE';
+    monthSecHead.font = { name: 'Calibri', size: 11, bold: true, color: { argb: headerTextArgb } };
+    monthSecHead.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerBgArgb } };
+    monthSecHead.alignment = { vertical: 'middle', horizontal: 'left' };
+    wsExec.getRow(execRowIdx).height = 26;
+    execRowIdx++;
+
+    // Monthly Headers
+    const monthHeaders = ['No.', 'Month / Period', 'Male Visits', 'Female Visits', 'Total Visits', 'Share (%)', 'Period Status'];
+    const monthHeadRow = wsExec.getRow(execRowIdx);
+    monthHeadRow.height = 24;
+    monthHeaders.forEach((h, i) => {
+      const cell = monthHeadRow.getCell(i + 1);
+      cell.value = h;
+      cell.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerTextArgb } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: secondaryColorArgb } };
+      cell.alignment = { vertical: 'middle', horizontal: i === 0 ? 'center' : (i >= 2 && i <= 5) ? 'right' : 'left' };
+      cell.border = {
+        top: { style: 'thin', color: { argb: 'FF1E293B' } },
+        bottom: { style: 'medium', color: { argb: headerBgArgb } },
+      };
+    });
+    execRowIdx++;
+
+    const monthDataStartRow = execRowIdx;
+    monthlyTimeline.forEach((m, idx) => {
+      const r = wsExec.getRow(execRowIdx);
+      r.height = 20;
+      const isEven = idx % 2 === 0;
+      const bg = isEven ? 'FFFFFFFF' : 'FFF8FAFC';
+
+      r.getCell(1).value = idx + 1;
+      r.getCell(1).alignment = { horizontal: 'center' };
+      r.getCell(2).value = m.label;
+      r.getCell(2).font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
+      r.getCell(3).value = m.male;
+      r.getCell(4).value = m.female;
+      r.getCell(5).value = m.total;
+      r.getCell(5).font = { name: 'Calibri', size: 9.5, bold: true };
+      r.getCell(6).value = `${m.percentage}%`;
+      r.getCell(7).value = 'Verified Attendance';
+      r.getCell(7).font = { name: 'Calibri', size: 9, italic: true, color: { argb: 'FF475569' } };
+
+      for (let c = 1; c <= 7; c++) {
+        r.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+        r.getCell(c).border = { bottom: { style: 'thin', color: { argb: 'FFE2E8F0' } } };
+      }
+      execRowIdx++;
+    });
+    const monthDataEndRow = execRowIdx - 1;
+
+    // Monthly Total Row
+    const monthTotRow = wsExec.getRow(execRowIdx);
+    monthTotRow.height = 24;
+    monthTotRow.getCell(2).value = 'TOTAL ALL TIMELINE PERIODS';
+    monthTotRow.getCell(2).font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+    monthTotRow.getCell(3).value = { formula: `SUM(C${monthDataStartRow}:C${monthDataEndRow})`, result: maleCount };
+    monthTotRow.getCell(4).value = { formula: `SUM(D${monthDataStartRow}:D${monthDataEndRow})`, result: femaleCount };
+    monthTotRow.getCell(5).value = { formula: `SUM(E${monthDataStartRow}:E${monthDataEndRow})`, result: totalCount };
+    monthTotRow.getCell(5).font = { name: 'Calibri', size: 10, bold: true };
+    monthTotRow.getCell(6).value = '100.0%';
+    monthTotRow.getCell(7).value = `${monthlyTimeline.length} Months Active`;
+
+    for (let c = 1; c <= 7; c++) {
+      monthTotRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDFF8F5' } };
+      monthTotRow.getCell(c).border = {
+        top: { style: 'medium', color: { argb: secondaryColorArgb } },
+        bottom: { style: 'double', color: { argb: headerBgArgb } },
+      };
+    }
+    execRowIdx += 2;
+  }
+
+  // ==========================================
+  // ADMINISTRATIVE ATTESTATION & SIGN-OFF BLOCK
+  // ==========================================
+  execRowIdx += 1;
+  wsExec.mergeCells(`A${execRowIdx}:C${execRowIdx}`);
+  wsExec.mergeCells(`E${execRowIdx}:G${execRowIdx}`);
+  const prepHead = wsExec.getCell(`A${execRowIdx}`);
+  prepHead.value = '  PREPARED BY (Yateguwe na):';
+  prepHead.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
+
+  const appHead = wsExec.getCell(`E${execRowIdx}`);
+  appHead.value = '  VERIFIED & APPROVED BY (Yemejwe na):';
+  appHead.font = { name: 'Calibri', size: 9.5, bold: true, color: { argb: headerBgArgb } };
+  execRowIdx++;
+
+  wsExec.mergeCells(`A${execRowIdx}:C${execRowIdx}`);
+  wsExec.mergeCells(`E${execRowIdx}:G${execRowIdx}`);
+  const prepName = wsExec.getCell(`A${execRowIdx}`);
+  prepName.value = `  Name: ${userProfile?.fullName || 'Attendance Desk Staff'}  |  Role: Administrator`;
+  prepName.font = { name: 'Calibri', size: 9, italic: true };
+
+  const appName = wsExec.getCell(`E${execRowIdx}`);
+  appName.value = `  Center Director / Nyabihu District Youth Coordinator`;
+  appName.font = { name: 'Calibri', size: 9, italic: true };
+  execRowIdx += 2;
+
+  // ==========================================
+  // SHEET 3: SERVICE SUMMARY SHEET
+  // ==========================================
   if (shouldIncludeServiceSheet && effectiveBreakdown.length > 0) {
-    const sheet2Name = (titles.serviceSummarySheetTitle || 'Service Summary').substring(0, 31);
-    const wsSummary = workbook.addWorksheet(sheet2Name, {
+    const sheet3Name = (titles.serviceSummarySheetTitle || 'Service Summary').substring(0, 31);
+    const wsSummary = workbook.addWorksheet(sheet3Name, {
       views: [{ state: 'frozen', ySplit: 5 }],
       properties: { defaultRowHeight: 20 },
     });
 
     wsSummary.columns = [
       { header: 'No.', key: 'no', width: 8 },
-      { header: 'Service Name', key: 'name', width: 34 },
+      { header: 'Service Name', key: 'name', width: 36 },
       { header: 'Male Visits', key: 'male', width: 16 },
       { header: 'Female Visits', key: 'female', width: 16 },
       { header: 'Total Visits', key: 'total', width: 16 },
@@ -444,15 +964,7 @@ export async function exportDetailedAttendanceToExcel({
     });
 
     let sRowIdx = 6;
-    let totMale = 0;
-    let totFemale = 0;
-    let totAll = 0;
-
     effectiveBreakdown.forEach((s, idx) => {
-      totMale += s.maleCount;
-      totFemale += s.femaleCount;
-      totAll += s.totalCount;
-
       const r = wsSummary.getRow(sRowIdx);
       r.height = 20;
       const isEven = idx % 2 === 0;
@@ -480,9 +992,9 @@ export async function exportDetailedAttendanceToExcel({
     sTotRow.height = 24;
     sTotRow.getCell(2).value = 'TOTAL ALL SERVICES';
     sTotRow.getCell(2).font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
-    sTotRow.getCell(3).value = totMale;
-    sTotRow.getCell(4).value = totFemale;
-    sTotRow.getCell(5).value = totAll;
+    sTotRow.getCell(3).value = maleCount;
+    sTotRow.getCell(4).value = femaleCount;
+    sTotRow.getCell(5).value = totalCount;
     sTotRow.getCell(5).font = { name: 'Calibri', size: 10, bold: true };
     sTotRow.getCell(6).value = '100.0%';
 
@@ -496,32 +1008,18 @@ export async function exportDetailedAttendanceToExcel({
   }
 
   // ==========================================
-  // SHEET 3: SECTOR BREAKDOWN SUMMARY
+  // SHEET 4: SECTOR BREAKDOWN SHEET
   // ==========================================
-  const nyabihuSectors = [
-    'Bigogwe', 'Jenda', 'Mukamira', 'Rambura', 'Rugera',
-    'Rurembo', 'Shyira', 'Kabatwa', 'Jomba', 'Karago', 'Kintobo', 'Other'
-  ];
-
-  const sectorCounts = nyabihuSectors.map((sec) => {
-    const secRecords = records.filter((r) => (r.sector || 'Mukamira').toLowerCase() === sec.toLowerCase());
-    const m = secRecords.filter((r) => r.sex === 'Male').length;
-    const f = secRecords.filter((r) => r.sex === 'Female').length;
-    const tot = secRecords.length;
-    const pct = records.length > 0 ? ((tot / records.length) * 100).toFixed(1) : '0.0';
-    return { sector: sec, male: m, female: f, total: tot, percentage: pct };
-  }).filter((s) => s.total > 0 || ['Bigogwe', 'Jenda', 'Mukamira', 'Rambura'].includes(s.sector));
-
-  if (shouldIncludeSectorSheet && sectorCounts.length > 0) {
-    const sheet3Name = (titles.sectorSummarySheetTitle || 'Sector Breakdown').substring(0, 31);
-    const wsSector = workbook.addWorksheet(sheet3Name, {
+  if (shouldIncludeSectorSheet && computedSectorBreakdown.length > 0) {
+    const sheet4Name = (titles.sectorSummarySheetTitle || 'Sector Breakdown').substring(0, 31);
+    const wsSector = workbook.addWorksheet(sheet4Name, {
       views: [{ state: 'frozen', ySplit: 5 }],
       properties: { defaultRowHeight: 20 },
     });
 
     wsSector.columns = [
       { header: 'No.', key: 'no', width: 8 },
-      { header: 'Sector Name (Umurenge)', key: 'sec', width: 28 },
+      { header: 'Sector Name (Umurenge)', key: 'sec', width: 30 },
       { header: 'Male Visitors', key: 'male', width: 16 },
       { header: 'Female Visitors', key: 'female', width: 16 },
       { header: 'Total Visitors', key: 'total', width: 16 },
@@ -542,7 +1040,7 @@ export async function exportDetailedAttendanceToExcel({
 
     wsSector.mergeCells('A3:F3');
     const secSub = wsSector.getCell('A3');
-    secSub.value = `  District: ${formattedDistrict}  |  Identified Sectors: ${sectorCounts.length}  |  Period: ${range.label}`;
+    secSub.value = `  District: ${formattedDistrict}  |  Identified Sectors: ${computedSectorBreakdown.length}  |  Period: ${range.label}`;
     secSub.font = { name: 'Calibri', size: 9.5, italic: true, color: { argb: 'FF475569' } };
     secSub.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF1F5F9' } };
     wsSector.getRow(3).height = 20;
@@ -560,7 +1058,7 @@ export async function exportDetailedAttendanceToExcel({
     });
 
     let secRowIdx = 6;
-    sectorCounts.forEach((sec, idx) => {
+    computedSectorBreakdown.forEach((sec, idx) => {
       const r = wsSector.getRow(secRowIdx);
       r.height = 20;
       const isEven = idx % 2 === 0;
@@ -582,6 +1080,25 @@ export async function exportDetailedAttendanceToExcel({
       }
       secRowIdx++;
     });
+
+    // Total row
+    const secTotRow = wsSector.getRow(secRowIdx);
+    secTotRow.height = 24;
+    secTotRow.getCell(2).value = 'TOTAL ALL SECTORS';
+    secTotRow.getCell(2).font = { name: 'Calibri', size: 10, bold: true, color: { argb: headerBgArgb } };
+    secTotRow.getCell(3).value = maleCount;
+    secTotRow.getCell(4).value = femaleCount;
+    secTotRow.getCell(5).value = totalCount;
+    secTotRow.getCell(5).font = { name: 'Calibri', size: 10, bold: true };
+    secTotRow.getCell(6).value = '100.0%';
+
+    for (let c = 1; c <= 6; c++) {
+      secTotRow.getCell(c).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDFF8F5' } };
+      secTotRow.getCell(c).border = {
+        top: { style: 'medium', color: { argb: secondaryColorArgb } },
+        bottom: { style: 'double', color: { argb: headerBgArgb } },
+      };
+    }
   }
 
   // ==========================================

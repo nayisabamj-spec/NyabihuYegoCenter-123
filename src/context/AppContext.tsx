@@ -110,6 +110,28 @@ interface AppContextType {
   logAction: (action: string, entityType: string, entityId: string, details?: string) => Promise<void>;
   seedRealisticData: () => Promise<void>;
   importCommitteeData: (onProgress?: (current: number, total: number) => void) => Promise<{ success: boolean; count: number; error?: string }>;
+  bulkRecordAttendance: (
+    records: Array<{
+      personName: string;
+      sex: Sex;
+      serviceId?: string;
+      serviceNameSnapshot?: string;
+      attendanceDate?: string;
+      attendanceTime?: string;
+      district?: string;
+      sector?: string;
+      cell?: string;
+      village?: string;
+      phoneNumber?: string;
+      email?: string;
+      nationalId?: string;
+      notes?: string;
+      importSource?: 'excel_file' | 'clipboard_paste';
+    }>,
+    options?: { saveToFirebase?: boolean }
+  ) => Promise<{ success: boolean; count: number; error?: string }>;
+  clearLocalBulkRecords: () => void;
+  localBulkRecordsCount: number;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -135,14 +157,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
+  const [localBulkRecordsCount, setLocalBulkRecordsCount] = useState<number>(() => {
+    try {
+      const s = localStorage.getItem('nyabihu_local_bulk_records');
+      const parsed = s ? JSON.parse(s) : [];
+      return Array.isArray(parsed) ? parsed.length : 0;
+    } catch {
+      return 0;
+    }
+  });
+
   const [allAttendance, setAllAttendance] = useState<AttendanceRecord[]>(() => {
     try {
+      let localBulk: AttendanceRecord[] = [];
+      try {
+        const lb = localStorage.getItem('nyabihu_local_bulk_records');
+        if (lb) localBulk = JSON.parse(lb);
+      } catch {}
+
       const s = localStorage.getItem('nyabihu_attendance_backup');
       const parsed = s ? JSON.parse(s) : [];
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
+      const baseRecords = Array.isArray(parsed) && parsed.length > 0 ? parsed : COMMITTEE_ATTENDANCE_RECORDS;
+      
+      if (localBulk.length > 0) {
+        const combined = [...localBulk, ...baseRecords.filter((r: AttendanceRecord) => !localBulk.some(l => l.id === r.id))];
+        return combined;
       }
-      return COMMITTEE_ATTENDANCE_RECORDS;
+      return baseRecords;
     } catch {
       return COMMITTEE_ATTENDANCE_RECORDS;
     }
@@ -352,16 +393,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 districtId: normalizeDistrictId(data.districtId),
               });
             });
-            // Sort by date & time desc in memory
-            records.sort((a, b) => {
+            let localBulk: AttendanceRecord[] = [];
+            try {
+              const lb = localStorage.getItem('nyabihu_local_bulk_records');
+              if (lb) localBulk = JSON.parse(lb);
+            } catch {}
+
+            const combined = [...localBulk, ...records.filter((r) => !localBulk.some((l) => l.id === r.id))];
+            combined.sort((a, b) => {
               const dtA = `${a.attendanceDate || ''} ${a.attendanceTime || ''}`;
               const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
               return dtB.localeCompare(dtA);
             });
-            console.info(`[Firestore Live Sync] Active attendance records in collection: ${records.length}`);
-            setAllAttendance(records);
+            console.info(`[Firestore Live Sync] Active records: ${combined.length} (${records.length} Firestore, ${localBulk.length} Local Bulk)`);
+            setAllAttendance(combined);
+            setLocalBulkRecordsCount(localBulk.length);
             try {
-              localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
+              localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(combined.slice(0, 3000)));
             } catch {}
             setLoadingData(false);
             setDbError(null);
@@ -420,14 +468,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           districtId: normalizeDistrictId(data.districtId),
         });
       });
-      records.sort((a, b) => {
+      let localBulk: AttendanceRecord[] = [];
+      try {
+        const lb = localStorage.getItem('nyabihu_local_bulk_records');
+        if (lb) localBulk = JSON.parse(lb);
+      } catch {}
+
+      const combined = [...localBulk, ...records.filter((r) => !localBulk.some((l) => l.id === r.id))];
+      combined.sort((a, b) => {
         const dtA = `${a.attendanceDate || ''} ${a.attendanceTime || ''}`;
         const dtB = `${b.attendanceDate || ''} ${b.attendanceTime || ''}`;
         return dtB.localeCompare(dtA);
       });
-      setAllAttendance(records);
+      setAllAttendance(combined);
+      setLocalBulkRecordsCount(localBulk.length);
       try {
-        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(records.slice(0, 3000)));
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(combined.slice(0, 3000)));
       } catch {}
       setLoadingData(false);
       setSyncStatus('connected');
@@ -706,6 +762,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (srv) updatedSnapshot = srv.name;
     }
 
+    // Handle Local Bulk Records (Zero Firestore calls needed)
+    if (existing.isLocalOnly) {
+      const verified = {
+        ...existing,
+        ...updates,
+        serviceNameSnapshot: updatedSnapshot,
+        updatedAt: new Date().toISOString(),
+      };
+      setAllAttendance(prev => prev.map(r => (r.id === id ? verified : r)));
+      try {
+        const lb: AttendanceRecord[] = JSON.parse(localStorage.getItem('nyabihu_local_bulk_records') || '[]');
+        const updated = lb.map(r => (r.id === id ? verified : r));
+        localStorage.setItem('nyabihu_local_bulk_records', JSON.stringify(updated));
+        const existingBackup = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
+        const updatedBackup = existingBackup.map((r: AttendanceRecord) => (r.id === id ? verified : r));
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(updatedBackup.slice(0, 3000)));
+      } catch {}
+      await logAction('EDIT_ATTENDANCE', 'attendance', id, `Updated local bulk record for ${verified.personName}`);
+      return { success: true };
+    }
+
     try {
       const docRef = doc(db, 'attendance', id);
       const updatedFields = {
@@ -740,10 +817,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Delete Attendance Record
   const deleteAttendance = async (id: string): Promise<{ success: boolean; error?: string }> => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) {
-      return { success: false, error: 'No internet connection. Please check your network.' };
-    }
-
     const existing = allAttendance.find(r => r.id === id);
     if (!existing) {
       return { success: false, error: 'Record not found' };
@@ -751,6 +824,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     if (!isDirector && existing.districtId !== userProfile?.districtId) {
       return { success: false, error: 'Unauthorized to delete another district record' };
+    }
+
+    // Handle Local Bulk Records (Zero Firestore calls needed)
+    if (existing.isLocalOnly) {
+      setAllAttendance(prev => prev.filter(r => r.id !== id));
+      try {
+        const lb: AttendanceRecord[] = JSON.parse(localStorage.getItem('nyabihu_local_bulk_records') || '[]');
+        const updated = lb.filter(r => r.id !== id);
+        localStorage.setItem('nyabihu_local_bulk_records', JSON.stringify(updated));
+        setLocalBulkRecordsCount(updated.length);
+        const currentBackup: AttendanceRecord[] = JSON.parse(localStorage.getItem('nyabihu_attendance_backup') || '[]');
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(currentBackup.filter(r => r.id !== id)));
+      } catch {}
+      await logAction('DELETE_ATTENDANCE', 'attendance', id, `Deleted local bulk record for ${existing.personName}`);
+      return { success: true };
+    }
+
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      return { success: false, error: 'No internet connection. Please check your network.' };
     }
 
     try {
@@ -1201,6 +1293,140 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // Bulk Record Attendance from Excel upload or Clipboard Paste without requiring Firebase writes
+  const bulkRecordAttendance = async (
+    records: Array<{
+      personName: string;
+      sex: Sex;
+      serviceId?: string;
+      serviceNameSnapshot?: string;
+      attendanceDate?: string;
+      attendanceTime?: string;
+      district?: string;
+      sector?: string;
+      cell?: string;
+      village?: string;
+      phoneNumber?: string;
+      email?: string;
+      nationalId?: string;
+      notes?: string;
+      importSource?: 'excel_file' | 'clipboard_paste';
+    }>,
+    options?: { saveToFirebase?: boolean }
+  ): Promise<{ success: boolean; count: number; error?: string }> => {
+    if (!records || records.length === 0) {
+      return { success: false, count: 0, error: 'No valid records provided for bulk recording.' };
+    }
+
+    const now = new Date();
+    const defaultDate = formatDateYYYYMMDD(now);
+
+    const formattedRecords: AttendanceRecord[] = records.map((r, index) => {
+      const sId = r.serviceId || 'srv-ict';
+      const srv = services.find(s => s.id === sId) || DEFAULT_SERVICES.find(s => s.id === sId);
+      const serviceName = r.serviceNameSnapshot || (srv ? srv.name : 'General Visit');
+      const recId = `rec-bulk-${Date.now()}-${index}-${Math.random().toString(36).substr(2, 6)}`;
+      
+      const baseHour = 8 + Math.floor((index * 8) / Math.max(records.length, 1));
+      const baseMin = (index * 7) % 60;
+      const fallbackTime = `${String(Math.min(baseHour, 17)).padStart(2, '0')}:${String(baseMin).padStart(2, '0')}`;
+
+      return {
+        id: recId,
+        districtId: (userProfile?.districtId || 'nyabihu').toLowerCase(),
+        districtName: r.district || userProfile?.districtName || 'NYABIHU',
+        adminId: userProfile?.id || 'admin-local',
+        recordedBy: userProfile?.fullName || 'Nyabihu Center Administration',
+        personName: r.personName.trim(),
+        sex: r.sex === 'Female' ? 'Female' : 'Male',
+        serviceId: sId,
+        serviceNameSnapshot: serviceName,
+        attendanceDate: r.attendanceDate || defaultDate,
+        attendanceTime: r.attendanceTime || fallbackTime,
+        sector: r.sector?.trim() || 'Mukamira',
+        cell: r.cell?.trim() || '',
+        village: r.village?.trim() || '',
+        phoneNumber: r.phoneNumber?.trim() || '',
+        email: r.email?.trim() || '',
+        nationalId: r.nationalId?.trim() || '',
+        isBulkGenerated: true,
+        isLocalOnly: !options?.saveToFirebase,
+        importSource: r.importSource || 'excel_file',
+        notes: r.notes?.trim() || (r.importSource === 'clipboard_paste' ? 'Bulk pasted from clipboard' : 'Bulk imported from Excel file'),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    });
+
+    if (options?.saveToFirebase) {
+      try {
+        const batchSize = 300;
+        for (let i = 0; i < formattedRecords.length; i += batchSize) {
+          const chunk = formattedRecords.slice(i, i + batchSize);
+          const batch = writeBatch(db);
+          for (const item of chunk) {
+            batch.set(doc(db, 'attendance', item.id), cleanForFirestore(item), { merge: true });
+          }
+          await batch.commit();
+        }
+      } catch (err: any) {
+        console.warn('Firebase batch error during bulk record:', err);
+      }
+    }
+
+    // Save into localStorage for persistence across reloads without Firebase writes
+    let existingBulk: AttendanceRecord[] = [];
+    try {
+      const lb = localStorage.getItem('nyabihu_local_bulk_records');
+      if (lb) existingBulk = JSON.parse(lb);
+    } catch {}
+
+    const updatedBulk = [...formattedRecords, ...existingBulk];
+    try {
+      localStorage.setItem('nyabihu_local_bulk_records', JSON.stringify(updatedBulk.slice(0, 5000)));
+    } catch (e) {
+      console.warn('LocalStorage limit for local bulk records:', e);
+    }
+
+    setLocalBulkRecordsCount(updatedBulk.length);
+
+    // Update in-memory allAttendance
+    setAllAttendance(prev => {
+      const merged = [...formattedRecords, ...prev];
+      try {
+        localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(merged.slice(0, 3000)));
+      } catch {}
+      return merged;
+    });
+
+    await logAction(
+      'BULK_RECORD_ATTENDANCE',
+      'attendance',
+      'bulk-import',
+      `Recorded ${formattedRecords.length} visits in bulk (${records[0]?.importSource || 'excel'}) without requiring Firebase writes.`
+    );
+
+    return { success: true, count: formattedRecords.length };
+  };
+
+  const clearLocalBulkRecords = () => {
+    try {
+      const lb: AttendanceRecord[] = JSON.parse(localStorage.getItem('nyabihu_local_bulk_records') || '[]');
+      const idsToRemove = new Set(lb.map(r => r.id));
+      localStorage.removeItem('nyabihu_local_bulk_records');
+      setLocalBulkRecordsCount(0);
+      setAllAttendance(prev => {
+        const filtered = prev.filter(r => !idsToRemove.has(r.id) && !r.isLocalOnly);
+        try {
+          localStorage.setItem('nyabihu_attendance_backup', JSON.stringify(filtered.slice(0, 3000)));
+        } catch {}
+        return filtered;
+      });
+    } catch (e) {
+      console.error('Error clearing local bulk records:', e);
+    }
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -1234,6 +1460,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         logAction,
         seedRealisticData,
         importCommitteeData,
+        bulkRecordAttendance,
+        clearLocalBulkRecords,
+        localBulkRecordsCount,
       }}
     >
       {children}

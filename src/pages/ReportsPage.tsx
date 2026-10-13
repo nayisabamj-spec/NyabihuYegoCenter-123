@@ -41,6 +41,7 @@ import {
   saveColumnsConfig,
 } from '../constants/columns';
 import { loadSavedExportTitles } from '../constants/exportTitles';
+import { NYABIHU_SECTORS } from '../constants/locations';
 
 export const ReportsPage: React.FC = () => {
   const { userProfile, isDirector } = useAuth();
@@ -80,6 +81,49 @@ export const ReportsPage: React.FC = () => {
   const stats = useMemo(() => {
     return computeDashboardStats(filteredRecords, services, currentRange);
   }, [filteredRecords, services, currentRange]);
+
+  // Comprehensive Sector Breakdown
+  const sectorBreakdown = useMemo(() => {
+    const total = filteredRecords.length;
+    const sectors = [...NYABIHU_SECTORS, 'Other / Outside District'];
+    return sectors.map((sec) => {
+      const isOther = sec.startsWith('Other');
+      const secRecs = filteredRecords.filter((r) => {
+        const s = (r.sector || 'Mukamira').trim();
+        if (isOther) {
+          return !NYABIHU_SECTORS.some((ns) => ns.toLowerCase() === s.toLowerCase());
+        }
+        return s.toLowerCase() === sec.toLowerCase();
+      });
+      const male = secRecs.filter((r) => r.sex === 'Male').length;
+      const female = secRecs.filter((r) => r.sex === 'Female').length;
+      const cnt = secRecs.length;
+      const pct = total > 0 ? Number(((cnt / total) * 100).toFixed(1)) : 0;
+      return { sector: sec, male, female, total: cnt, percentage: pct };
+    }).filter((s) => s.total > 0 || ['Bigogwe', 'Jenda', 'Mukamira', 'Rambura', 'Karago', 'Kabatwa'].includes(s.sector));
+  }, [filteredRecords]);
+
+  // Comprehensive Monthly Timeline Breakdown
+  const monthlyBreakdown = useMemo(() => {
+    const total = filteredRecords.length;
+    const mMap = new Map<string, { male: number; female: number; total: number }>();
+    filteredRecords.forEach((r) => {
+      const ym = r.attendanceDate ? r.attendanceDate.substring(0, 7) : 'Unknown';
+      const item = mMap.get(ym) || { male: 0, female: 0, total: 0 };
+      if (r.sex === 'Male') item.male += 1;
+      if (r.sex === 'Female') item.female += 1;
+      item.total += 1;
+      mMap.set(ym, item);
+    });
+    return Array.from(mMap.keys()).sort().map((ym) => {
+      const [y, m] = ym.split('-').map(Number);
+      const d = new Date(y, m - 1, 1);
+      const label = !isNaN(d.getTime()) ? d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' }) : ym;
+      const data = mMap.get(ym)!;
+      const pct = total > 0 ? Number(((data.total / total) * 100).toFixed(1)) : 0;
+      return { ym, label, ...data, percentage: pct };
+    });
+  }, [filteredRecords]);
 
   const insights = useMemo(() => {
     return generateChallengerInsights(stats, currentRange);
@@ -283,15 +327,18 @@ export const ReportsPage: React.FC = () => {
               onChange={(e) => setPeriod(e.target.value as PeriodType)}
               className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-[#1F222C] cursor-pointer"
             >
-              <option value="today">Daily (Today)</option>
-              <option value="yesterday">Daily (Yesterday)</option>
-              <option value="this_week">Weekly (This Week)</option>
-              <option value="last_week">Weekly (Last Week)</option>
+              <option value="all_time">All Time (Full Database)</option>
+              <option value="this_year">This Year (Full Year)</option>
+              <option value="last_year">Last Year</option>
+              <option value="fiscal_year">Fiscal Year (Rwanda FY)</option>
+              <option value="last_4_months">4-Month Period (Trimester)</option>
+              <option value="last_3_months">3-Month Period (Quarter)</option>
               <option value="this_month">Monthly (This Month)</option>
               <option value="last_month">Monthly (Last Month)</option>
-              <option value="last_3_months">3-Month Period (Quarter)</option>
-              <option value="last_4_months">4-Month Period (Trimester)</option>
-              <option value="this_year">Yearly (Full Year)</option>
+              <option value="this_week">Weekly (This Week)</option>
+              <option value="last_week">Weekly (Last Week)</option>
+              <option value="today">Daily (Today)</option>
+              <option value="yesterday">Daily (Yesterday)</option>
               <option value="custom">Custom Date Range</option>
             </select>
           </div>
@@ -494,10 +541,138 @@ export const ReportsPage: React.FC = () => {
           </div>
         </section>
 
-        {/* 3. Key Observations & Data Insights */}
+        {/* 3. Geographic Participation by Sector Table */}
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold uppercase tracking-wider text-[#23285E]">
+              3. Geographic Distribution Across Nyabihu Sectors (Imirenge)
+            </h3>
+            <span className="text-xs text-slate-500 font-medium">{sectorBreakdown.length} Sectors Active</span>
+          </div>
+
+          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="bg-[#23285E] text-white font-bold">
+                  <th className="py-3 px-4">Sector Name (Umurenge)</th>
+                  <th className="py-3 px-4 text-right">Male Visitors</th>
+                  <th className="py-3 px-4 text-right">Female Visitors</th>
+                  <th className="py-3 px-4 text-right">Total Visitors</th>
+                  <th className="py-3 px-4 text-right">Share (%)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200 text-slate-700">
+                {sectorBreakdown.map((sec, idx) => (
+                  <tr key={sec.sector} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
+                    <td className="py-3 px-4 font-semibold text-[#23285E]">
+                      {sec.sector}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono text-slate-700">
+                      {sec.male.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono text-slate-700">
+                      {sec.female.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-bold text-[#23285E]">
+                      {sec.total.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-semibold text-slate-600">
+                      {sec.percentage}%
+                    </td>
+                  </tr>
+                ))}
+                {/* Total Row */}
+                <tr className="bg-[#DFF8F5]/80 font-bold text-[#23285E] border-t-2 border-slate-300">
+                  <td className="py-3 px-4 uppercase tracking-wider font-extrabold">
+                    Total Sector Distribution
+                  </td>
+                  <td className="py-3 px-4 text-right font-mono font-black">
+                    {stats.maleTotal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-4 text-right font-mono font-black">
+                    {stats.femaleTotal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-4 text-right font-mono font-black text-sm text-[#23285E]">
+                    {stats.filteredTotal.toLocaleString()}
+                  </td>
+                  <td className="py-3 px-4 text-right font-mono font-black">
+                    100.0%
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        {/* 4. Monthly Participation Timeline Table (If multi-month scope) */}
+        {monthlyBreakdown.length > 1 && (
+          <section className="space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold uppercase tracking-wider text-[#23285E]">
+                4. Monthly Attendance & Participation Timeline
+              </h3>
+              <span className="text-xs text-slate-500 font-medium">{monthlyBreakdown.length} Months Tracked</span>
+            </div>
+
+            <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="bg-[#23285E] text-white font-bold">
+                    <th className="py-3 px-4">Period / Month</th>
+                    <th className="py-3 px-4 text-right">Male Visits</th>
+                    <th className="py-3 px-4 text-right">Female Visits</th>
+                    <th className="py-3 px-4 text-right">Total Visits</th>
+                    <th className="py-3 px-4 text-right">Monthly Share (%)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200 text-slate-700">
+                  {monthlyBreakdown.map((m, idx) => (
+                    <tr key={m.ym} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'}>
+                      <td className="py-3 px-4 font-semibold text-[#23285E]">
+                        {m.label}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-slate-700">
+                        {m.male.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-slate-700">
+                        {m.female.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-bold text-[#23285E]">
+                        {m.total.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono font-semibold text-slate-600">
+                        {m.percentage}%
+                      </td>
+                    </tr>
+                  ))}
+                  {/* Total Row */}
+                  <tr className="bg-[#DFF8F5]/80 font-bold text-[#23285E] border-t-2 border-slate-300">
+                    <td className="py-3 px-4 uppercase tracking-wider font-extrabold">
+                      Total Timeline Attendance
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-black">
+                      {stats.maleTotal.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-black">
+                      {stats.femaleTotal.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-black text-sm text-[#23285E]">
+                      {stats.filteredTotal.toLocaleString()}
+                    </td>
+                    <td className="py-3 px-4 text-right font-mono font-black">
+                      100.0%
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {/* 5. Key Observations & Data Insights */}
         <section className="space-y-3">
           <h3 className="text-sm font-bold uppercase tracking-wider text-[#23285E]">
-            3. Key Operational Observations & Trends
+            {monthlyBreakdown.length > 1 ? '5. Key Operational Observations & Trends' : '4. Key Operational Observations & Trends'}
           </h3>
 
           <div className="space-y-2.5">

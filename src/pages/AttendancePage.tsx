@@ -34,6 +34,7 @@ import { Modal } from '../components/common/Modal';
 import { ConfirmDialog } from '../components/common/ConfirmDialog';
 import { ColumnCustomizerModal } from '../components/common/ColumnCustomizerModal';
 import { ExportTitlesModal } from '../components/common/ExportTitlesModal';
+import { BulkAttendanceModal } from '../components/attendance/BulkAttendanceModal';
 import {
   ALL_COLUMNS,
   DEFAULT_COLUMNS_CONFIG,
@@ -64,6 +65,8 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
     dbError,
     refreshAttendanceData,
     importCommitteeData,
+    localBulkRecordsCount,
+    clearLocalBulkRecords,
   } = useApp();
   const { toast } = useToast();
 
@@ -73,6 +76,7 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
   );
   const [isColumnModalOpen, setIsColumnModalOpen] = useState(false);
   const [isTitlesModalOpen, setIsTitlesModalOpen] = useState(false);
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
 
   // Search and Filter States
   const [searchTerm, setSearchTerm] = useState('');
@@ -387,6 +391,16 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
             Export PDF
           </Button>
           <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setIsBulkModalOpen(true)}
+            icon={<FileSpreadsheet className="w-4 h-4 text-emerald-600" />}
+            className="border-emerald-300 text-emerald-800 bg-emerald-50/60 hover:bg-emerald-100 font-bold"
+            title="Upload Excel spreadsheet (.xlsx, .csv) or paste copied table rows to record visits in bulk without saving to Firebase"
+          >
+            Bulk Import / Paste
+          </Button>
+          <Button
             variant="primary"
             size="sm"
             onClick={onNavigateToRecord}
@@ -395,6 +409,29 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
             Record Visit
           </Button>
         </div>
+
+        {/* Local Bulk Records Active Notification Banner */}
+        {localBulkRecordsCount > 0 && (
+          <div className="w-full mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-xs bg-emerald-50/70 text-emerald-900 px-3.5 py-2.5 rounded-xl border border-emerald-200">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+              <span>
+                <strong>{localBulkRecordsCount}</strong> visits registered via Excel/Bulk (stored locally, 0 Firebase quota used). Active across all reports and exports.
+              </span>
+            </div>
+            <button
+              onClick={() => {
+                if (confirm(`Remove all ${localBulkRecordsCount} locally recorded bulk visits? This will not affect official database records.`)) {
+                  clearLocalBulkRecords();
+                  toast.info('Local Records Cleared', 'All locally recorded bulk visits were removed.');
+                }
+              }}
+              className="text-xs text-rose-600 hover:text-rose-800 font-bold underline cursor-pointer shrink-0 ml-3"
+            >
+              Clear Local Bulk
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Database Error or Connection Warning Banner */}
@@ -646,6 +683,14 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
                               {rec.isSelfCheckIn && (
                                 <span className="text-[10px] bg-[#E6E65A]/40 text-[#23285E] font-bold px-1.5 py-0.5 rounded">
                                   Self
+                                </span>
+                              )}
+                              {rec.isLocalOnly && (
+                                <span
+                                  className="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.5 rounded border border-emerald-200"
+                                  title="Bulk recorded locally without Firebase"
+                                >
+                                  {rec.importSource === 'clipboard_paste' ? 'Pasted' : 'Excel'}
                                 </span>
                               )}
                               {rec.sector && !columnsConfig.sector && (
@@ -1004,6 +1049,12 @@ export const AttendancePage: React.FC<AttendancePageProps> = ({ onNavigateToReco
         onSave={() => {
           toast.success('Report Titles Saved', 'Custom titles will be used for all future Excel (.xlsx) and CSV exports.');
         }}
+      />
+
+      {/* Bulk Attendance Import Modal (Excel & Clipboard Paste - Zero Firebase writes) */}
+      <BulkAttendanceModal
+        isOpen={isBulkModalOpen}
+        onClose={() => setIsBulkModalOpen(false)}
       />
     </div>
   );

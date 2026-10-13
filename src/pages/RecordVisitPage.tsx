@@ -15,7 +15,8 @@ import {
   CreditCard,
   ChevronDown,
   ChevronUp,
-  Check
+  Check,
+  FileSpreadsheet
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useApp } from '../context/AppContext';
@@ -24,6 +25,7 @@ import { Sex } from '../types';
 import { Button } from '../components/common/Button';
 import { Badge } from '../components/common/Badge';
 import { ServiceIcon } from '../components/common/ServiceIcon';
+import { BulkAttendanceModal } from '../components/attendance/BulkAttendanceModal';
 import { formatDateYYYYMMDD } from '../utils/stats';
 import { DEFAULT_DISTRICT, NYABIHU_SECTORS, ALL_RWANDA_DISTRICTS } from '../constants/locations';
 
@@ -59,6 +61,7 @@ export const RecordVisitPage: React.FC = () => {
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [lastRecordedName, setLastRecordedName] = useState<string | null>(null);
+  const [isBulkModalOpen, setIsBulkModalOpen] = useState(false);
 
   const nameInputRef = useRef<HTMLInputElement>(null);
 
@@ -174,12 +177,23 @@ export const RecordVisitPage: React.FC = () => {
           </p>
         </div>
 
-        {/* Auto metadata tag */}
-        <div className="flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-slate-600">
-          <Building2 className="w-4 h-4 text-[#3591C8]" />
-          <span>
-            District: <strong className="text-[#23285E]">{userProfile?.districtName || 'NYABIHU'}</strong>
-          </span>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            type="button"
+            onClick={() => setIsBulkModalOpen(true)}
+            className="flex items-center gap-2 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl text-xs font-bold transition-colors cursor-pointer shadow-2xs"
+            title="Upload Excel spreadsheet (.xlsx, .csv) or paste copied table rows to record visits in bulk without saving to Firebase"
+          >
+            <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
+            <span>Bulk Excel / Paste</span>
+          </button>
+          {/* Auto metadata tag */}
+          <div className="flex items-center gap-2 text-xs bg-slate-50 border border-slate-200 px-3 py-2 rounded-xl text-slate-600">
+            <Building2 className="w-4 h-4 text-[#3591C8]" />
+            <span>
+              District: <strong className="text-[#23285E]">{userProfile?.districtName || 'NYABIHU'}</strong>
+            </span>
+          </div>
         </div>
       </div>
 
@@ -581,6 +595,12 @@ export const RecordVisitPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Bulk Attendance Modal */}
+      <BulkAttendanceModal
+        isOpen={isBulkModalOpen}
+        onClose={() => setIsBulkModalOpen(false)}
+      />
     </div>
   );
 };
